@@ -1,0 +1,25 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+.netrc
+
+# Release artifacts (built by CI)
+.dist/
+build/
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# macOS
+.DS_Store
+*.swp
+
+# Logs / misc
+*.log
+*.tmp
+
+# Claude Code local settings
+.claude/settings.local.json

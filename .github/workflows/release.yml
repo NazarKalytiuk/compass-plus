@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Derive version
+        id: version
+        run: |
+          REF="${{ inputs.tag || github.ref_name }}"
+          VERSION="${REF#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${REF}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-release-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-release-
+
+      - name: Build universal app
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash Scripts/build-app.sh
+
+      - name: Package as DMG
+        run: bash Scripts/make-dmg.sh
+
+      - name: Package as ZIP
+        run: bash Scripts/make-zip.sh
+
+      - name: Compute SHA-256 checksums
+        run: |
+          cd .dist
+          shasum -a 256 MongoCompass.dmg MongoCompass.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ### DMG (recommended)
+            1. Download **MongoCompass.dmg**
+            2. Open it and drag **MongoCompass.app** to **Applications**
+            3. First launch: right-click the app → **Open** → **Open** (ad-hoc signed, not notarized)
+
+            ### ZIP
+            1. Download **MongoCompass.zip**
+            2. Unzip — move **MongoCompass.app** wherever you like
+            3. First launch: right-click → **Open**
+
+            ### Checksums
+            SHA-256 checksums are in `SHA256SUMS.txt`.
+          files: |
+            .dist/MongoCompass.dmg
+            .dist/MongoCompass.zip
+            .dist/SHA256SUMS.txt
