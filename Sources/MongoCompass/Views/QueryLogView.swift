@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct QueryLogView: View {
     @Environment(AppViewModel.self) private var viewModel
 

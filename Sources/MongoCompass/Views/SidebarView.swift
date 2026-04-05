@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct SidebarView: View {
     @Environment(AppViewModel.self) private var viewModel
 

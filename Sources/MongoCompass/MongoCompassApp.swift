@@ -40,6 +40,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Root View
 
+@MainActor
 struct RootView: View {
     @Environment(AppViewModel.self) private var viewModel
 

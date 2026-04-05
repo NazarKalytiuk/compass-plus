@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct DocumentEditorView: View {
     @Environment(AppViewModel.self) private var viewModel
     @Environment(\.dismiss) private var dismiss

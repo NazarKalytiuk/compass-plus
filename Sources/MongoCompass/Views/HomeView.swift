@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct HomeView: View {
     @Environment(AppViewModel.self) private var viewModel
 

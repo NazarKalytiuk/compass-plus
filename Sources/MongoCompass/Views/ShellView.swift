@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct ShellView: View {
     @Environment(AppViewModel.self) private var viewModel
 
@@ -382,6 +383,7 @@ struct ShellView: View {
 
 // MARK: - Shell TextField (with arrow key support)
 
+@MainActor
 struct ShellTextField: NSViewRepresentable {
     @Binding var text: String
     var onSubmit: () -> Void

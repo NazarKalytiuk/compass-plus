@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct SchemaView: View {
     @Environment(AppViewModel.self) private var viewModel
 
@@ -198,6 +199,7 @@ struct SchemaView: View {
 
 // MARK: - Schema Field Row (Recursive)
 
+@MainActor
 struct SchemaFieldRow: View {
     let field: SchemaField
     let depth: Int
@@ -364,6 +366,7 @@ struct SchemaFieldRow: View {
 
 // MARK: - Stats Panel
 
+@MainActor
 struct SchemaStatsPanel: View {
     let stats: SchemaFieldStats
     let depth: Int

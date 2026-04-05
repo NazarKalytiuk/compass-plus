@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 struct AggregationView: View {
     @Environment(AppViewModel.self) private var viewModel
 
@@ -749,6 +750,7 @@ struct AggregationView: View {
 
 // MARK: - Result Document Card (with copy feedback)
 
+@MainActor
 private struct ResultDocumentCard: View {
     let index: Int
     let doc: [String: Any]
@@ -800,6 +802,7 @@ private struct ResultDocumentCard: View {
 
 // MARK: - Copy Button (with feedback)
 
+@MainActor
 private struct CopyButton: View {
     let text: String
     let label: String

@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+@MainActor
 struct DocumentListView: View {
     @Environment(AppViewModel.self) private var viewModel
 

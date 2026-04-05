@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct MetricsView: View {
     @Environment(AppViewModel.self) private var viewModel
 
@@ -517,6 +518,7 @@ struct MetricsView: View {
 
 // MARK: - Sparkline Chart (Canvas-based)
 
+@MainActor
 struct SparklineChart: View {
     let data: [Double]
     var lineColor: Color = Theme.green
