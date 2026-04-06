@@ -23,13 +23,11 @@ rm -rf "${DIST_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS"
 mkdir -p "${APP_DIR}/Contents/Resources"
 
-echo "==> Building universal release binary (arm64 + x86_64)"
-swift build -c release \
-    --arch arm64 \
-    --arch x86_64
+echo "==> Building release binary"
+swift build -c release
 
-# With multi-arch builds, SPM places the binary in .build/apple/Products/Release
-BIN_PATH=".build/apple/Products/Release/${TARGET}"
+BIN_DIR=$(swift build -c release --show-bin-path)
+BIN_PATH="${BIN_DIR}/${TARGET}"
 if [[ ! -f "${BIN_PATH}" ]]; then
     echo "Error: binary not found at ${BIN_PATH}" >&2
     exit 1
@@ -39,8 +37,8 @@ echo "==> Copying binary into app bundle"
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${TARGET}"
 chmod +x "${APP_DIR}/Contents/MacOS/${TARGET}"
 
-echo "==> Verifying universal slices"
-lipo -info "${APP_DIR}/Contents/MacOS/${TARGET}"
+echo "==> Binary architecture:"
+file "${APP_DIR}/Contents/MacOS/${TARGET}"
 
 echo "==> Writing Info.plist"
 cp "${INFO_PLIST}" "${APP_DIR}/Contents/Info.plist"
