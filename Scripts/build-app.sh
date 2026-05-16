@@ -48,6 +48,14 @@ if [[ -n "${VERSION}" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "${APP_DIR}/Contents/Info.plist"
 fi
 
+ICON_SRC="Resources/AppIcon.icns"
+if [[ -f "${ICON_SRC}" ]]; then
+    echo "==> Copying AppIcon.icns"
+    cp "${ICON_SRC}" "${APP_DIR}/Contents/Resources/AppIcon.icns"
+else
+    echo "    Note: ${ICON_SRC} missing — bundle will use the generic app icon"
+fi
+
 echo "==> Ad-hoc signing"
 codesign --force --deep --sign - "${APP_DIR}"
 
