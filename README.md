@@ -20,13 +20,17 @@ After that, double-click works normally.
 
 ## Features
 
-- **Explorer** — browse databases and collections, CRUD on documents, saved queries, pagination.
-- **Aggregation pipeline builder** — per-stage previews, operator autocomplete, ~150 MongoDB operators in the completion catalog, `allowDiskUse`, result cap, duplicate/reorder/collapse stages, Cmd+Enter to run.
-- **Schema analysis** — BSON-accurate type detection, value statistics (min/max/avg, string lengths, distinct counts, top values), mixed-type warnings, full-scan mode.
-- **Investigate** — create/drop indexes, view slow queries, explain plans, profiling level control.
-- **Metrics** — live server status, memory/connections/network, current operations.
-- **Dump & Restore** — wraps `mongodump`/`mongorestore` when installed.
-- **Shell** — embedded `mongosh` session (requires `mongosh` installed locally).
+- **Connect** — any MongoDB URI (`mongodb://`, `mongodb+srv://`). On failure the screen shows a real DNS/TLS/Auth diagnose pass with phase-by-phase timings. Recents are grouped by favourite environment color.
+- **Explorer** — browse databases and collections, CRUD on documents, saved queries, pagination. Three view modes: **Tree** (collapsible KV), **Table** (sticky header, type-tinted cells), **JSON** (one bulk codeBg block with line-number gutter). Auto-detected status tags (`tier · pro`, `2FA pending`, `trialing`, …) per document.
+- **Document editor** — schema-driven lint that reads `$jsonSchema` validators (required / bsonType / enum / additionalProperties) with a type-heuristic fallback. **Insert & clone** keeps the modal open between inserts. Dynamic UTF-8/LF pills track the actual buffer.
+- **Aggregation pipeline builder** — per-stage previews, operator autocomplete (~150 MongoDB operators), drag-and-drop reordering, **per-stage timing & index** via executionStats explain, slow-stage hints with index suggestions, toolbar **Explain** sheet, `allowDiskUse`, result cap, Cmd+Enter to run.
+- **Schema analysis** — BSON-accurate type detection, value statistics (min/max/avg, string lengths, distinct counts, top values), mixed-type warnings, full-scan mode, deepest-path indicator, sparse-fields preview, **sample diff** ("+N new since last sample") persisted per `db.collection`.
+- **Investigate** — create/drop indexes, aggregated slow queries (mean / p99 / count / last seen), R/W locks column on current ops, **Filter…** (namespace / op-type / min-duration) and **Lower threshold…** popovers, JSON **Export report** via fileExporter, sidebar badge of slow + long-running ops.
+- **Metrics** — live server status with 6 KPI sparklines (Ops · Connections · Resident mem · Net I/O · Cache hit · **Replication lag**), Memory chart includes a WT cache line, real **PNG export** via `ImageRenderer` @ 2x.
+- **Query Log** — every operation logged with `examined / plan / client / errorMessage`. Custom time-range via `DatePicker`. Advanced search syntax: `op:aggregate OR slow >= 1000ms`, `coll:users`, `plan:IXSCAN`, with substring fallback.
+- **Dump & Restore** — wraps `mongodump` / `mongorestore` with all the flags you actually want (`--oplog`, `--excludeIndexes`, `--numParallelCollections`, `--oplogReplay`, `--noIndexRestore`, `--maintainInsertionOrder`, `--noObjcheck`, `--stopOnError`). Restore strategies: **Drop + restore** / **Merge** / **Skip existing**. **Dry run** prints the full command. **Save preset** stores the form per name. Estimated size is real (via `collStats`).
+- **Shell** — embedded `mongosh` session with multi-line input (Enter = newline, ⌘↵ = submit), syntax-highlighted output (`ObjectId(…)`, `ISODate(…)`, `$keys`, numbers, strings), blinking caret. Requires `mongosh` installed locally.
+- **Sidebar** — count-badges on Query Log / Investigate / Schema rows, **⌘K** focuses the search field.
 - **Multi-tab** — up to 8 tabs, each with its own database/collection/filter state.
 
 ## Build from source
