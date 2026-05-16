@@ -58,7 +58,9 @@ final class MetricsService: @unchecked Sendable {
         guard let service = mongoService, service.isConnected else { return }
 
         do {
-            let status = try await service.getServerStatus()
+            var status = try await service.getServerStatus()
+            // Replica-set lag — tolerated to be nil on standalones.
+            status.replLagMs = try? await service.getReplicationLagMs()
             let now = Date()
 
             // Detect server restart (uptime regression)
@@ -80,12 +82,64 @@ final class MetricsService: @unchecked Sendable {
                 let networkInPerSec = Double(status.networkBytesIn - prev.networkBytesIn) / elapsed
                 let networkOutPerSec = Double(status.networkBytesOut - prev.networkBytesOut) / elapsed
 
+                // CPU% — sum of user + system μs delta over wall-clock μs.
+                // Can exceed 100% on multi-core. nil if extra_info missing.
+                let cpuPercent: Double? = {
+                    guard status.hasProcessStats && prev.hasProcessStats else { return nil }
+                    let deltaUser = status.cpuUserTimeUs - prev.cpuUserTimeUs
+                    let deltaSystem = status.cpuSystemTimeUs - prev.cpuSystemTimeUs
+                    let deltaCpuUs = Double(deltaUser + deltaSystem)
+                    let elapsedUs = elapsed * 1_000_000.0
+                    guard elapsedUs > 0 else { return nil }
+                    return Swift.max(0, deltaCpuUs / elapsedUs * 100.0)
+                }()
+
+                // Cache hit ratio — pages requested - pages read from disk,
+                // divided by pages requested. nil when WT cache absent or
+                // there were no cache requests in the window.
+                let cacheHitRatio: Double? = {
+                    guard status.hasCacheStats && prev.hasCacheStats else { return nil }
+                    let deltaRequested = status.cachePagesRequestedFromCache - prev.cachePagesRequestedFromCache
+                    let deltaReadIntoCache = status.cachePagesReadIntoCache - prev.cachePagesReadIntoCache
+                    guard deltaRequested > 0 else { return nil }
+                    let hits = Double(deltaRequested - deltaReadIntoCache)
+                    return Swift.max(0, Swift.min(1, hits / Double(deltaRequested)))
+                }()
+
+                let diskReadPerSec: Double? = {
+                    guard status.hasDiskStats && prev.hasDiskStats else { return nil }
+                    let delta = status.diskBytesRead - prev.diskBytesRead
+                    return Swift.max(0, Double(delta) / elapsed)
+                }()
+                let diskWritePerSec: Double? = {
+                    guard status.hasDiskStats && prev.hasDiskStats else { return nil }
+                    let delta = status.diskBytesWritten - prev.diskBytesWritten
+                    return Swift.max(0, Double(delta) / elapsed)
+                }()
+
+                let pageFaultsPerSec: Double? = {
+                    guard status.hasProcessStats && prev.hasProcessStats else { return nil }
+                    let delta = status.pageFaults - prev.pageFaults
+                    return Swift.max(0, Double(delta) / elapsed)
+                }()
+
+                let wtCacheMB: Double? = status.hasCacheStats
+                    ? Double(status.cacheBytesUsed) / (1024 * 1024)
+                    : nil
+
                 let snapshot = MetricsSnapshot(
                     timestamp: now,
                     opsPerSec: Swift.max(0, opsPerSec),
                     memoryMB: Double(status.memoryResident),
                     networkInPerSec: Swift.max(0, networkInPerSec),
-                    networkOutPerSec: Swift.max(0, networkOutPerSec)
+                    networkOutPerSec: Swift.max(0, networkOutPerSec),
+                    cpuPercent: cpuPercent,
+                    cacheHitRatio: cacheHitRatio,
+                    diskReadPerSec: diskReadPerSec,
+                    diskWritePerSec: diskWritePerSec,
+                    pageFaultsPerSec: pageFaultsPerSec,
+                    replLagMs: status.replLagMs.map(Double.init),
+                    wtCacheMB: wtCacheMB
                 )
 
                 history.append(snapshot)

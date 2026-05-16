@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Query log</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: 0;
+  }
+  .ql-body {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 12px;
+    padding: 12px 16px 14px;
+    overflow: hidden;
+    min-height: 0;
+    background: var(--surface-0);
+  }
+  .filters {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 14px 14px 16px;
+    overflow: auto;
+    min-height: 0;
+    display: flex; flex-direction: column;
+    gap: 16px;
+  }
+  .filter-block .h {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted-2);
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .date-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
+  .date-row .field { height: 28px; font-size: 12px; }
+  .quick-range { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+  .quick-range .pill { cursor: default; }
+
+  .chip-grid { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip-grid .pill { cursor: default; }
+  .chip-grid .pill.is-off { opacity: 0.4; }
+
+  .coll-list { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow: auto; padding-right: 4px; }
+  .coll-pick {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .coll-pick:hover { background: var(--surface-hover); }
+  .coll-pick .cb {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    background: var(--surface-3);
+    box-shadow: var(--shadow-inset);
+    position: relative;
+  }
+  .coll-pick.is-on .cb { background: var(--primary); }
+  .coll-pick.is-on .cb::after {
+    content: ""; position: absolute; left: 3px; top: 1px;
+    width: 4px; height: 8px;
+    border-right: 1.6px solid #fff; border-bottom: 1.6px solid #fff;
+    transform: rotate(45deg);
+  }
+  .coll-pick .name { font-family: var(--font-mono); font-size: 12px; }
+  .coll-pick .ct { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted-2); }
+
+  .toggle-line { display: flex; align-items: center; justify-content: space-between; }
+  .toggle-line span { font-size: 12.5px; color: var(--fg-soft); display: flex; align-items: center; gap: 8px; }
+  .toggle {
+    width: 30px; height: 17px;
+    border-radius: 999px;
+    background: var(--primary);
+    position: relative; flex: none;
+  }
+  .toggle::after {
+    content: ""; position: absolute; width: 13px; height: 13px;
+    border-radius: 50%; background: #fff;
+    top: 2px; left: 15px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  }
+  .toggle.is-off { background: #C8C2B7; }
+  .toggle.is-off::after { left: 2px; }
+
+  .log-list {
+    overflow: auto;
+    min-height: 0;
+    display: flex; flex-direction: column;
+    gap: 8px;
+    padding-right: 4px;
+  }
+  .log-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 10px 14px;
+    display: flex; flex-direction: column;
+    gap: 6px;
+  }
+  .log-card .row {
+    display: grid;
+    grid-template-columns: 70px 90px 1fr auto auto auto;
+    gap: 12px;
+    align-items: center;
+  }
+  .ts { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ns {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ns .nsdb { color: var(--muted); }
+  .ms-pill {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+  .ms-pill.ok   { background: #DCFCE7; color: #15803D; }
+  .ms-pill.warn { background: #FEF3C7; color: #B45309; }
+  .ms-pill.bad  { background: #FEE2E2; color: #B91C1C; }
+
+  .log-detail {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border-radius: var(--r-md);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.65;
+    padding: 12px 14px;
+    box-shadow: inset 0 2px 6px rgba(0,0,0,0.25);
+    margin-top: 8px;
+  }
+  .log-detail .tab-row {
+    display: flex; gap: 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    margin: -4px -4px 8px;
+    padding: 0 4px 6px;
+  }
+  .log-detail .tab-row span {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    color: rgba(255,255,255,0.5);
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .log-detail .tab-row .is-on {
+    color: #fff;
+    background: rgba(255,255,255,0.08);
+    font-weight: 600;
+  }
+  .log-detail .tok-key { color: var(--code-key); }
+  .log-detail .tok-str { color: var(--code-string); }
+  .log-detail .tok-num { color: var(--code-number); }
+  .log-detail .tok-bool{ color: var(--code-bool); }
+  .log-detail .tok-kw  { color: var(--code-keyword); }
+  .log-detail .tok-pun { color: var(--code-bracket); }
+  .log-detail .tok-com { color: var(--code-comment); font-style: italic; }
+
+  .twist {
+    width: 16px; height: 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--muted-2);
+    cursor: default;
+    font-size: 10px;
+  }
+  .twist.is-open { transform: rotate(90deg); }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'log', activeColl: null },
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="mono" style="color:var(--muted);">production-cluster</span>
+        <span class="crumb-sep">›</span>
+        <span class="mono" style="color:var(--fg);font-weight:600;">query log</span>
+      </span>
+      <div class="field is-mono" style="width:320px;">
+        <span class="ic">${Shell.ICONS.search}</span>
+        <input value="$lookup OR slow >= 1000ms" placeholder="Filter by query, op, regex…">
+      </div>
+      <span class="toolbar-spacer"></span>
+      <span class="muted" style="font-size:11.5px;">12,408 entries · 8.2 MB</span>
+      <button class="btn">Export</button>
+      <button class="btn">Clear log…</button>
+    </div>
+
+    <div class="ql-body">
+      <aside class="filters">
+        <div class="filter-block">
+          <div class="h">Time range</div>
+          <div class="date-row">
+            <div class="field is-mono"><input value="2026-05-15 09:00"></div>
+            <div class="field is-mono"><input value="2026-05-15 13:42"></div>
+          </div>
+          <div class="quick-range">
+            <span class="pill">5m</span>
+            <span class="pill">1h</span>
+            <span class="pill is-accent">4h</span>
+            <span class="pill">today</span>
+            <span class="pill">custom</span>
+          </div>
+        </div>
+
+        <div class="filter-block">
+          <div class="h">Collections</div>
+          <div class="coll-list">
+            <div class="coll-pick is-on"><span class="cb"></span><span class="name">app_prod.users</span><span class="ct">4,201</span></div>
+            <div class="coll-pick is-on"><span class="cb"></span><span class="name">app_prod.orders</span><span class="ct">3,184</span></div>
+            <div class="coll-pick is-on"><span class="cb"></span><span class="name">app_prod.audit_log</span><span class="ct">2,820</span></div>
+            <div class="coll-pick"><span class="cb"></span><span class="name">app_prod.sessions</span><span class="ct">1,402</span></div>
+            <div class="coll-pick"><span class="cb"></span><span class="name">app_prod.invoices</span><span class="ct">681</span></div>
+            <div class="coll-pick"><span class="cb"></span><span class="name">analytics.events</span><span class="ct">120</span></div>
+            <div class="coll-pick"><span class="cb"></span><span class="name">admin.$cmd</span><span class="ct">14</span></div>
+          </div>
+        </div>
+
+        <div class="filter-block">
+          <div class="h">Operations</div>
+          <div class="chip-grid">
+            <span class="pill is-info">query</span>
+            <span class="pill is-success">insert</span>
+            <span class="pill is-warning">update</span>
+            <span class="pill is-danger">delete</span>
+            <span class="pill is-violet">aggregate</span>
+            <span class="pill is-mono">command</span>
+            <span class="pill is-off">getMore</span>
+            <span class="pill is-off">count</span>
+          </div>
+        </div>
+
+        <div class="filter-block">
+          <div class="h">Result</div>
+          <div class="toggle-line"><span><span class="dot is-success"></span>Success</span><span class="toggle"></span></div>
+          <div class="toggle-line" style="margin-top:8px;"><span><span class="dot is-danger"></span>Errors</span><span class="toggle"></span></div>
+          <div class="toggle-line" style="margin-top:8px;"><span><span class="dot is-warning"></span>Slow (> 100ms)</span><span class="toggle"></span></div>
+        </div>
+
+        <div class="filter-block">
+          <div class="h">Client</div>
+          <div class="field is-mono" style="margin-top:4px;">
+            <input value="api-gw-* | checkout-*">
+          </div>
+        </div>
+
+        <div class="filter-block" style="margin-top:auto;">
+          <button class="btn btn-primary" style="width:100%;">Apply · 7 filters</button>
+          <button class="btn" style="width:100%;margin-top:6px;">Reset</button>
+        </div>
+      </aside>
+
+      <div class="log-list">
+        <div class="log-card">
+          <div class="row">
+            <span class="twist is-open">▸</span>
+            <span class="pill is-violet">aggregate</span>
+            <span class="ns"><span class="nsdb">app_prod.</span>orders</span>
+            <span class="ms-pill bad">12,420 ms</span>
+            <span class="pill is-danger">errored</span>
+            <span class="ts">13:41:58.402</span>
+          </div>
+          <div class="muted" style="font-size:11.5px;font-family:var(--font-mono);">
+            client: eu-worker-3.k8s · plan: COLLSCAN · returned 0 / examined 38,612,008 docs
+          </div>
+          <div class="log-detail">
+            <div class="tab-row">
+              <span class="is-on">Query</span>
+              <span>Explain</span>
+              <span>Trace</span>
+              <span>Client headers</span>
+            </div><span class="tok-fn" style="color:#6FB7E0;">db.orders.aggregate</span><span class="tok-pun">([</span>
+  <span class="tok-pun">{</span> <span class="tok-key">"$match"</span><span class="tok-pun">:</span> <span class="tok-pun">{</span> <span class="tok-key">"status"</span><span class="tok-pun">:</span> <span class="tok-str">"completed"</span><span class="tok-pun">,</span> <span class="tok-key">"region"</span><span class="tok-pun">:</span> <span class="tok-str">"EU-W"</span> <span class="tok-pun">} },</span>
+  <span class="tok-pun">{</span> <span class="tok-key">"$lookup"</span><span class="tok-pun">:</span> <span class="tok-pun">{</span> <span class="tok-key">"from"</span><span class="tok-pun">:</span> <span class="tok-str">"users"</span><span class="tok-pun">,</span> <span class="tok-key">"localField"</span><span class="tok-pun">:</span> <span class="tok-str">"userId"</span><span class="tok-pun">,</span> <span class="tok-key">"foreignField"</span><span class="tok-pun">:</span> <span class="tok-str">"_id"</span><span class="tok-pun">,</span> <span class="tok-key">"as"</span><span class="tok-pun">:</span> <span class="tok-str">"u"</span> <span class="tok-pun">}},</span>
+  <span class="tok-pun">{</span> <span class="tok-key">"$group"</span><span class="tok-pun">:</span> <span class="tok-pun">{</span> <span class="tok-key">"_id"</span><span class="tok-pun">:</span> <span class="tok-str">"$u.tier"</span><span class="tok-pun">,</span> <span class="tok-key">"revenue"</span><span class="tok-pun">:</span> <span class="tok-pun">{</span> <span class="tok-key">"$sum"</span><span class="tok-pun">:</span> <span class="tok-str">"$total"</span> <span class="tok-pun">}}}</span>
+<span class="tok-pun">])</span>
+<span class="tok-com">// MongoServerError: PlanExecutor error during aggregation :: caused by :: operation exceeded time limit</span>
+          </div>
+        </div>
+
+        <div class="log-card">
+          <div class="row">
+            <span class="twist">▸</span>
+            <span class="pill is-warning">update</span>
+            <span class="ns"><span class="nsdb">app_prod.</span>sessions</span>
+            <span class="ms-pill warn">2,108 ms</span>
+            <span class="pill">multi</span>
+            <span class="ts">13:41:55.182</span>
+          </div>
+          <div class="muted" style="font-size:11.5px;font-family:var(--font-mono);">
+            { lastSeen: { $lt: ISODate(...) }, … } · matched 14,082 · modified 14,082
+          </div>
+        </div>
+
+        <div class="log-card">
+          <div class="row">
+            <span class="twist">▸</span>
+            <span class="pill is-info">query</span>
+            <span class="ns"><span class="nsdb">app_prod.</span>users</span>
+            <span class="ms-pill ok">142 ms</span>
+            <span class="pill is-success">25 returned</span>
+            <span class="ts">13:41:50.804</span>
+          </div>
+          <div class="muted" style="font-size:11.5px;font-family:var(--font-mono);">
+            { tier: "pro", createdAt: { $gte: ISODate("2026-04-01") } } · used index tier_1_createdAt_-1
+          </div>
+        </div>
+
+        <div class="log-card">
+          <div class="row">
+            <span class="twist">▸</span>
+            <span class="pill is-success">insert</span>
+            <span class="ns"><span class="nsdb">app_prod.</span>orders</span>
+            <span class="ms-pill ok">8 ms</span>
+            <span class="pill">single</span>
+            <span class="ts">13:41:48.024</span>
+          </div>
+          <div class="muted" style="font-size:11.5px;font-family:var(--font-mono);">
+            client: checkout-2.svc · _id: ObjectId("6624c0f1a3b81e0042c19fdb") · total: $91.20
+          </div>
+        </div>
+
+        <div class="log-card">
+          <div class="row">
+            <span class="twist">▸</span>
+            <span class="pill is-danger">delete</span>
+            <span class="ns"><span class="nsdb">app_prod.</span>sessions</span>
+            <span class="ms-pill warn">412 ms</span>
+            <span class="pill is-mono">bulk</span>
+            <span class="ts">13:41:42.118</span>
+          </div>
+          <div class="muted" style="font-size:11.5px;font-family:var(--font-mono);">
+            { expiresAt: { $lt: now } } · removed 8,420 expired sessions
+          </div>
+        </div>
+
+        <div class="log-card">
+          <div class="row">
+            <span class="twist">▸</span>
+            <span class="pill is-violet">aggregate</span>
+            <span class="ns"><span class="nsdb">app_prod.</span>audit_log</span>
+            <span class="ms-pill bad">4,820 ms</span>
+            <span class="pill is-warning">slow</span>
+            <span class="ts">13:41:38.512</span>
+          </div>
+          <div class="muted" style="font-size:11.5px;font-family:var(--font-mono);">
+            pipeline monthly_actor_summary · 4 stages · examined 38.6M / returned 482
+          </div>
+        </div>
+
+        <div class="log-card">
+          <div class="row">
+            <span class="twist">▸</span>
+            <span class="pill is-mono">command</span>
+            <span class="ns"><span class="nsdb">admin.</span>$cmd · serverStatus</span>
+            <span class="ms-pill ok">2 ms</span>
+            <span class="pill is-info">internal</span>
+            <span class="ts">13:41:30.020</span>
+          </div>
+          <div class="muted" style="font-size:11.5px;font-family:var(--font-mono);">
+            client: compass+ (mac) · returned 4.2 KB
+          </div>
+        </div>
+      </div>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

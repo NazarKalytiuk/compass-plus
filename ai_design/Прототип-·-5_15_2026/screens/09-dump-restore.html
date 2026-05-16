@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Dump / Restore</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: 0;
+  }
+  .dr-body {
+    overflow: hidden;
+    padding: 14px 16px 16px;
+    background: var(--surface-0);
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 12px;
+    min-height: 0;
+  }
+  .pair-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .op-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 16px 18px;
+    display: flex; flex-direction: column;
+    gap: 12px;
+  }
+  .op-head {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .op-head .title { font-family: var(--font-display); font-size: 16px; font-weight: 600; }
+  .op-head .sub   { font-size: 11.5px; color: var(--muted); }
+
+  .form-row {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 10px;
+    align-items: center;
+  }
+  .form-row .lbl {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted-2);
+  }
+
+  .checks { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chk {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    background: var(--surface-3);
+    border-radius: 999px;
+    font-size: 11.5px;
+    color: var(--fg-soft);
+    cursor: default;
+  }
+  .chk.is-on { background: var(--primary-50); color: var(--primary-700); font-weight: 600; }
+  .chk.is-on::before { content: "✓"; color: var(--primary); font-weight: 700; }
+
+  .toggle-row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--fg-soft); }
+  .toggle {
+    width: 30px; height: 17px;
+    border-radius: 999px;
+    background: var(--primary);
+    position: relative; flex: none;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+  }
+  .toggle::after {
+    content: ""; position: absolute; width: 13px; height: 13px;
+    border-radius: 50%; background: #fff;
+    top: 2px; left: 15px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  }
+  .toggle.is-off { background: #C8C2B7; }
+  .toggle.is-off::after { left: 2px; }
+
+  .slider {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: center;
+  }
+  .slider .track {
+    height: 4px;
+    background: var(--surface-3);
+    border-radius: 999px;
+    position: relative;
+    box-shadow: var(--shadow-inset);
+  }
+  .slider .fill {
+    position: absolute;
+    height: 100%;
+    background: var(--primary);
+    border-radius: 999px;
+  }
+  .slider .thumb {
+    position: absolute;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: var(--shadow-md);
+    top: -6px;
+    transform: translateX(-50%);
+  }
+  .slider .val {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    color: var(--fg);
+    font-weight: 600;
+    min-width: 60px;
+    text-align: right;
+  }
+
+  .op-summary {
+    background: var(--surface-3);
+    border-radius: var(--r-md);
+    padding: 10px 12px;
+    font-size: 11.5px;
+    color: var(--muted);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px 12px;
+  }
+  .op-summary .k { color: var(--muted-2); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }
+  .op-summary .v { font-family: var(--font-mono); color: var(--fg-soft); }
+
+  .cta-row {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: auto;
+  }
+
+  .log-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 12px 14px 0;
+    display: flex; flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .log-head {
+    display: flex; align-items: center; gap: 10px;
+    padding-bottom: 10px;
+  }
+  .log-head .title { font-family: var(--font-display); font-size: 13px; font-weight: 600; }
+  .log-stream {
+    flex: 1;
+    overflow: auto;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border-radius: var(--r-md) var(--r-md) 0 0;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.6;
+    padding: 12px 14px;
+    box-shadow: inset 0 2px 6px rgba(0,0,0,0.25);
+    margin-bottom: 0;
+    white-space: pre-wrap;
+    position: relative;
+  }
+  .log-line { padding: 1px 0; }
+  .log-time { color: var(--code-muted); }
+  .log-tag {
+    display: inline-block;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding: 0 5px;
+    border-radius: 3px;
+    margin-right: 6px;
+    color: #fff;
+    font-weight: 600;
+    background: #2563EB;
+  }
+  .log-tag.is-info { background: #2563EB; }
+  .log-tag.is-ok   { background: #15803D; }
+  .log-tag.is-warn { background: #B45309; }
+  .log-tag.is-err  { background: #B91C1C; }
+  .log-key { color: var(--code-key); }
+  .log-str { color: var(--code-string); }
+  .log-num { color: var(--code-number); }
+  .log-stream::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); }
+
+  .scroll-pin {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    background: var(--primary);
+    color: #fff;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex; align-items: center; gap: 6px;
+    box-shadow: 0 4px 12px rgba(217,73,31,0.4);
+  }
+  .scroll-pin::before {
+    content: "↓"; font-weight: 800;
+  }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'dump', activeColl: null },
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="mono" style="color:var(--muted);">production-cluster</span>
+        <span class="crumb-sep">›</span>
+        <span class="mono" style="color:var(--fg);font-weight:600;">dump / restore</span>
+      </span>
+      <span class="pill is-info">mongodump 100.10.0</span>
+      <span class="toolbar-spacer"></span>
+      <button class="btn">View history</button>
+      <button class="btn">Schedule…</button>
+    </div>
+
+    <div class="dr-body">
+      <div class="pair-row">
+
+        <!-- DUMP -->
+        <div class="op-card">
+          <div class="op-head">
+            <span style="display:inline-flex;width:28px;height:28px;border-radius:7px;background:linear-gradient(135deg,#F2673C,#F38B3F);color:#fff;align-items:center;justify-content:center;font-weight:700;">↓</span>
+            <span class="title">Dump</span>
+            <span class="sub">export a BSON snapshot to local disk</span>
+            <span class="spacer" style="flex:1;"></span>
+            <span class="pill is-success">connected</span>
+          </div>
+
+          <div class="form-row">
+            <span class="lbl">Source</span>
+            <div class="field">
+              <span class="dot is-success"></span>
+              <input value="production-cluster · app_prod" readonly>
+              <span class="chev">▾</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Scope</span>
+            <div class="checks">
+              <span class="chk is-on">All collections</span>
+              <span class="chk">Selected…</span>
+              <span class="chk">By regex</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Output folder</span>
+            <div class="field is-mono">
+              <input value="~/Backups/app_prod/2026-05-15-13-42/" readonly>
+              <button class="btn" style="height:22px;padding:0 10px;font-size:11.5px;">Browse…</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Compression</span>
+            <div class="toggle-row">
+              <span class="toggle"></span>
+              <span>gzip <span class="muted" style="font-family:var(--font-mono);font-size:11px;">(--gzip)</span></span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="muted-2" style="font-size:11px;">est. 1.2 GB → 320 MB</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Parallel</span>
+            <div class="slider">
+              <div class="track">
+                <div class="fill" style="width:50%;"></div>
+                <div class="thumb" style="left:50%;"></div>
+              </div>
+              <div class="val">4 / 8</div>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Extras</span>
+            <div class="checks">
+              <span class="chk is-on">--oplog</span>
+              <span class="chk is-on">--numParallelCollections=4</span>
+              <span class="chk">--excludeIndexes</span>
+            </div>
+          </div>
+
+          <div class="op-summary">
+            <span class="k">Est. size</span><span class="k">Collections</span><span class="k">ETA</span>
+            <span class="v">320 MB</span><span class="v">5</span><span class="v">~ 42 s</span>
+          </div>
+
+          <div class="cta-row">
+            <button class="btn">Dry run</button>
+            <button class="btn">Save preset…</button>
+            <span class="spacer" style="flex:1;"></span>
+            <button class="btn btn-primary">Start dump</button>
+          </div>
+        </div>
+
+        <!-- RESTORE -->
+        <div class="op-card">
+          <div class="op-head">
+            <span style="display:inline-flex;width:28px;height:28px;border-radius:7px;background:linear-gradient(135deg,#2563EB,#5B8DEF);color:#fff;align-items:center;justify-content:center;font-weight:700;">↑</span>
+            <span class="title">Restore</span>
+            <span class="sub">load a BSON snapshot into a target cluster</span>
+            <span class="spacer" style="flex:1;"></span>
+            <span class="pill is-warning">target = staging</span>
+          </div>
+
+          <div class="form-row">
+            <span class="lbl">Snapshot</span>
+            <div class="field is-mono">
+              <input value="~/Backups/app_prod/2026-05-15-13-42/" readonly>
+              <button class="btn" style="height:22px;padding:0 10px;font-size:11.5px;">Browse…</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Target</span>
+            <div class="field">
+              <span class="dot is-warning"></span>
+              <input value="staging · app_stg" readonly>
+              <span class="chev">▾</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Strategy</span>
+            <div class="checks">
+              <span class="chk is-on">Drop + restore</span>
+              <span class="chk">Merge</span>
+              <span class="chk">Skip existing</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Decompress</span>
+            <div class="toggle-row">
+              <span class="toggle"></span>
+              <span>gzip <span class="muted" style="font-family:var(--font-mono);font-size:11px;">(--gzip)</span></span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="muted-2" style="font-size:11px;">auto-detected</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Parallel</span>
+            <div class="slider">
+              <div class="track">
+                <div class="fill" style="width:75%;"></div>
+                <div class="thumb" style="left:75%;"></div>
+              </div>
+              <div class="val">6 / 8</div>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="lbl">Extras</span>
+            <div class="checks">
+              <span class="chk is-on">--oplogReplay</span>
+              <span class="chk is-on">--maintainInsertionOrder</span>
+              <span class="chk">--noIndexRestore</span>
+            </div>
+          </div>
+
+          <div class="op-summary">
+            <span class="k">Source size</span><span class="k">Collections</span><span class="k">ETA</span>
+            <span class="v">320 MB</span><span class="v">5</span><span class="v">~ 1 m 12 s</span>
+          </div>
+
+          <div class="cta-row">
+            <button class="btn">Dry run</button>
+            <button class="btn">Save preset…</button>
+            <span class="spacer" style="flex:1;"></span>
+            <button class="btn btn-primary">Start restore</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- LOG -->
+      <div class="log-card">
+        <div class="log-head">
+          <span class="title">Live output</span>
+          <span class="pill is-success">dumping · 73%</span>
+          <span class="muted" style="font-size:11.5px;">mongodump · pid 48,201 · started 18 s ago</span>
+          <span class="spacer" style="flex:1;"></span>
+          <button class="btn">Pause</button>
+          <button class="btn">Copy log</button>
+          <button class="btn">Clear</button>
+        </div>
+        <div class="log-stream">
+<div class="log-line"><span class="log-time">13:42:01.084  </span><span class="log-tag is-info">info</span>writing <span class="log-str">"app_prod.users"</span> to <span class="log-str">~/Backups/app_prod/2026-05-15-13-42/app_prod/users.bson.gz</span></div>
+<div class="log-line"><span class="log-time">13:42:01.118  </span><span class="log-tag is-info">info</span>writing <span class="log-str">"app_prod.sessions"</span> to <span class="log-str">~/Backups/app_prod/2026-05-15-13-42/app_prod/sessions.bson.gz</span></div>
+<div class="log-line"><span class="log-time">13:42:01.119  </span><span class="log-tag is-info">info</span>writing <span class="log-str">"app_prod.orders"</span> to <span class="log-str">~/Backups/app_prod/2026-05-15-13-42/app_prod/orders.bson.gz</span></div>
+<div class="log-line"><span class="log-time">13:42:01.120  </span><span class="log-tag is-info">info</span>writing <span class="log-str">"app_prod.invoices"</span> to <span class="log-str">~/Backups/app_prod/2026-05-15-13-42/app_prod/invoices.bson.gz</span></div>
+<div class="log-line"><span class="log-time">13:42:04.310  </span><span class="log-tag is-ok">ok</span>done dumping <span class="log-str">app_prod.sessions</span> (<span class="log-num">218,442</span> documents, <span class="log-num">14.2 MB</span>) in <span class="log-num">3.19s</span></div>
+<div class="log-line"><span class="log-time">13:42:09.082  </span><span class="log-tag is-ok">ok</span>done dumping <span class="log-str">app_prod.invoices</span> (<span class="log-num">912,084</span> documents, <span class="log-num">81.4 MB</span>) in <span class="log-num">7.96s</span></div>
+<div class="log-line"><span class="log-time">13:42:09.083  </span><span class="log-tag is-info">info</span>writing <span class="log-str">"app_prod.audit_log"</span> to <span class="log-str">~/Backups/app_prod/2026-05-15-13-42/app_prod/audit_log.bson.gz</span></div>
+<div class="log-line"><span class="log-time">13:42:14.520  </span><span class="log-tag is-warn">warn</span>oplog window is <span class="log-num">28m</span> — consider pausing writes during a 12s snapshot</div>
+<div class="log-line"><span class="log-time">13:42:17.118  </span><span class="log-tag is-ok">ok</span>done dumping <span class="log-str">app_prod.orders</span> (<span class="log-num">4,201,099</span> documents, <span class="log-num">198.4 MB</span>) in <span class="log-num">16.03s</span></div>
+<div class="log-line"><span class="log-time">13:42:19.402  </span><span class="log-tag is-info">info</span>users: <span class="log-num">82%</span> · <span class="log-num">1,148,201 / 1,400,000</span> docs · <span class="log-num">42 MB/s</span></div>
+<div class="log-line"><span class="log-time">13:42:19.404  </span><span class="log-tag is-info">info</span>audit_log: <span class="log-num">11%</span> · <span class="log-num">4,251,008 / 38,600,000</span> docs · <span class="log-num">36 MB/s</span></div>
+<div class="log-line"><span class="log-time">13:42:19.500  </span><span class="log-time">  ▌</span></div>
+<span class="scroll-pin">latest · 12 new lines</span>
+        </div>
+      </div>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

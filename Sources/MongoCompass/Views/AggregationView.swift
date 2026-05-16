@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 @MainActor
 struct AggregationView: View {
@@ -12,402 +13,575 @@ struct AggregationView: View {
     @State private var showLoadPipelineSheet = false
     @State private var deletePipelineId: UUID?
     @State private var showDeletePipelineAlert = false
+    @State private var showAddStageMenu = false
+    @State private var draggedStageId: UUID?
+    @State private var explainSheetText: String?
+    @State private var isExplaining: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header bar
-            HStack {
-                Text("Aggregation Pipeline")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-
-                Spacer()
-
-                if let db = viewModel.activeTab.selectedDatabase,
-                   let col = viewModel.activeTab.selectedCollection {
-                    Text("\(db).\(col)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textSecondary)
-                }
-            }
-            .padding(14)
-            .background(Theme.surface.opacity(0.4))
-
-            ThemedDivider()
+            toolbar
 
             if viewModel.activeTab.selectedCollection == nil {
                 noCollectionView
             } else {
-                HSplitView {
-                    pipelineBuilderPanel
-                        .frame(minWidth: 360, idealWidth: 480)
-                    resultsPanel
-                        .frame(minWidth: 300, idealWidth: 500)
+                HStack(alignment: .top, spacing: 14) {
+                    pipelineColumn
+                        .frame(width: 480)
+                    previewColumn
+                        .frame(maxWidth: .infinity)
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 16)
+                .frame(maxHeight: .infinity)
+                .background(Theme.surface0)
             }
-
-            ThemedDivider()
-
-            // Bottom toolbar
-            bottomToolbar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.midnight)
-        .sheet(isPresented: $showCodeGenSheet) {
-            codeGenerationSheet
-        }
-        .sheet(isPresented: $showSavePipelineSheet) {
-            savePipelineSheet
-        }
-        .sheet(isPresented: $showLoadPipelineSheet) {
-            loadPipelineSheet
-        }
+        .background(Theme.surface0)
+        .sheet(isPresented: $showCodeGenSheet) { codeGenerationSheet }
+        .sheet(isPresented: $showSavePipelineSheet) { savePipelineSheet }
+        .sheet(isPresented: $showLoadPipelineSheet) { loadPipelineSheet }
         .alert("Delete Pipeline", isPresented: $showDeletePipelineAlert) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
-                if let id = deletePipelineId {
-                    viewModel.deletePipeline(id: id)
-                }
+                if let id = deletePipelineId { viewModel.deletePipeline(id: id) }
             }
         } message: {
             Text("Are you sure you want to delete this saved pipeline?")
         }
     }
 
-    // MARK: - Pipeline Builder Panel
+    // MARK: - Top toolbar
 
-    private var pipelineBuilderPanel: some View {
-        @Bindable var viewModel = viewModel
-        return VStack(spacing: 0) {
-            // Add stage header
-            HStack {
-                Text("PIPELINE STAGES")
-                    .sectionHeaderStyle()
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            breadcrumb
 
-                Spacer()
-
-                Button {
-                    viewModel.addPipelineStage()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Add Stage")
-                    }
-                }
-                .buttonStyle(.accentCompact)
-            }
-            .padding(14)
-
-            ThemedDivider()
-
-            // Stages list
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    ForEach(Array(viewModel.pipelineStages.enumerated()), id: \.element.id) { index, stage in
-                        pipelineStageCard(index: index, stage: stage)
-                    }
-                }
-                .padding(14)
-            }
-
-            ThemedDivider()
-
-            // Run button + controls
-            runControls
-        }
-        .background(Theme.midnight)
-    }
-
-    private var runControls: some View {
-        @Bindable var viewModel = viewModel
-        return HStack(spacing: 12) {
-            Button {
-                Task {
-                    await viewModel.runAggregation()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "play.fill")
-                    Text("Run Pipeline")
-                    Text("⌘↵")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.midnight.opacity(0.6))
-                }
-            }
-            .buttonStyle(.accent)
-            .keyboardShortcut(.return, modifiers: .command)
-            .disabled(viewModel.isLoading)
+            Text("draft · unsaved").pillBadge(.accent)
 
             Spacer()
 
-            Toggle(isOn: $viewModel.allowDiskUse) {
-                Text("allowDiskUse")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.textSecondary)
+            Menu {
+                Toggle("allowDiskUse", isOn: Bindable(viewModel).allowDiskUse)
+                Divider()
+                Section("Result limit") {
+                    Picker("Limit", selection: Bindable(viewModel).aggregationResultLimit) {
+                        Text("100").tag(100)
+                        Text("500").tag(500)
+                        Text("1 000").tag(1000)
+                        Text("5 000").tag(5000)
+                        Text("∞").tag(0)
+                    }
+                }
+                Divider()
+                Button {
+                    showCodeGenSheet = true
+                } label: {
+                    Label("Generate code…", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 11))
+                    Text("Options")
+                        .font(.system(size: 12.5, weight: .medium))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .foregroundStyle(Theme.textSoft)
+                .contentShape(Rectangle())
             }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .help("Lift the 100MB memory limit for $sort and $group")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+
+            Button {
+                showLoadPipelineSheet = true
+            } label: {
+                Text("Load saved…")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Theme.textSoft)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                savePipelineName = ""
+                showSavePipelineSheet = true
+            } label: {
+                Text("Save pipeline")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Theme.textSoft)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.pipelineStages.isEmpty)
+
+            Button {
+                runExplain()
+            } label: {
+                HStack(spacing: 5) {
+                    if isExplaining {
+                        ProgressView().controlSize(.mini).scaleEffect(0.6)
+                    } else {
+                        Image(systemName: "list.bullet.indent").font(.system(size: 10))
+                    }
+                    Text("Explain")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(Theme.textSoft)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isExplaining || viewModel.pipelineStages.isEmpty || viewModel.activeTab.selectedCollection == nil)
+
+            Button {
+                Task { await viewModel.runAggregation() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "play.fill").font(.system(size: 10))
+                    Text("Run")
+                }
+            }
+            .buttonStyle(.accentCompact)
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(viewModel.isLoading || viewModel.activeTab.selectedCollection == nil)
         }
-        .padding(14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Theme.surface1)
+        .shadow(color: Theme.shadowAmbient.opacity(0.6), radius: 0.5, y: 0.5)
+        .sheet(isPresented: Binding(get: { explainSheetText != nil }, set: { if !$0 { explainSheetText = nil } })) {
+            explainSheet
+        }
     }
 
-    // MARK: - Stage Card
+    /// Renders the most recent explain output in a code-surface modal.
+    @ViewBuilder
+    private var explainSheet: some View {
+        if let text = explainSheetText {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Pipeline explain")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "doc.on.doc").font(.system(size: 11))
+                            Text("Copy")
+                        }
+                    }
+                    .buttonStyle(.ghost)
+                    Button("Close") { explainSheetText = nil }
+                        .buttonStyle(.ghost)
+                        .keyboardShortcut(.escape, modifiers: [])
+                }
+                ScrollView(.vertical, showsIndicators: true) {
+                    Text(text)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(Theme.codeFg)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+                .background(Theme.codeBg)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .padding(16)
+            .frame(width: 720, height: 520)
+            .background(Theme.surface0)
+        }
+    }
+
+    private func runExplain() {
+        guard let database = viewModel.activeTab.selectedDatabase,
+              let collection = viewModel.activeTab.selectedCollection else { return }
+        isExplaining = true
+        Task {
+            defer { isExplaining = false }
+            do {
+                let pipeline = try Self.pipelineForExplain(viewModel.pipelineStages.filter { $0.enabled })
+                let result = try await viewModel.mongoService.explainAggregation(
+                    database: database, collection: collection, pipeline: pipeline
+                )
+                let data = try JSONSerialization.data(
+                    withJSONObject: result,
+                    options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed]
+                )
+                explainSheetText = String(data: data, encoding: .utf8) ?? "{}"
+            } catch {
+                explainSheetText = "Explain failed:\n\(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Lightweight copy of AppViewModel.buildPipeline kept local so the
+    /// toolbar Explain button can pre-flight without exposing that private
+    /// helper.
+    private static func pipelineForExplain(_ stages: [PipelineStage]) throws -> [[String: Any]] {
+        var pipeline: [[String: Any]] = []
+        for stage in stages {
+            let data = stage.body.data(using: .utf8) ?? Data()
+            let body = try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
+            pipeline.append([stage.type: body])
+        }
+        return pipeline
+    }
+
+    private var breadcrumb: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(viewModel.isConnected ? Theme.success : Theme.textMuted)
+                .frame(width: 7, height: 7)
+                .padding(.trailing, 2)
+
+            if let db = viewModel.activeTab.selectedDatabase {
+                Text(db)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.textMuted)
+            }
+            if let coll = viewModel.activeTab.selectedCollection {
+                Text(coll)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.textPrimary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.textMuted)
+            }
+            Text("pipeline")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.textMuted)
+        }
+    }
+
+    // MARK: - Pipeline column (left)
+
+    private var pipelineColumn: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            LazyVStack(spacing: 10) {
+                ForEach(Array(viewModel.pipelineStages.enumerated()), id: \.element.id) { index, stage in
+                    pipelineStageCard(index: index, stage: stage)
+                }
+                addStageButton
+                    .padding(.top, 4)
+            }
+            .padding(.trailing, 4)
+        }
+    }
+
+    private var addStageButton: some View {
+        Menu {
+            ForEach(PipelineStage.availableTypes, id: \.self) { type in
+                Button {
+                    viewModel.addPipelineStage()
+                    if let idx = viewModel.pipelineStages.indices.last {
+                        viewModel.pipelineStages[idx].type = type
+                        viewModel.pipelineStages[idx].body = PipelineStage.template(for: type)
+                    }
+                } label: {
+                    Text("\(type) — \(stageDescription(type))")
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .bold))
+                Text("Add stage")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(Theme.primaryDeep)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(Theme.surface2)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+    }
+
+    // MARK: - Stage card
 
     private func pipelineStageCard(index: Int, stage: PipelineStage) -> some View {
-        @Bindable var viewModel = viewModel
         let isValidJSON = validateJSON(stage.body)
         let stageCount = viewModel.pipelineStages.count
+        let kind = stageBadgeKind(stage.type)
 
-        return VStack(alignment: .leading, spacing: 10) {
-            // Top row: collapse, number, type, reorder, validation, enable, duplicate, delete
-            HStack(spacing: 6) {
-                // Collapse toggle
-                Button {
-                    viewModel.pipelineStages[index].collapsed.toggle()
-                } label: {
-                    Image(systemName: stage.collapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(width: 14)
-                }
-                .buttonStyle(.plain)
-                .help(stage.collapsed ? "Expand stage" : "Collapse stage")
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textMuted)
 
-                // Stage number
-                Text("\(index + 1)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Theme.textSecondary)
-                    .frame(width: 18)
+                Text(stage.type)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(kind.background)
+                    .foregroundStyle(kind.foreground)
+                    .clipShape(Capsule())
 
-                // Stage type picker
+                Text(stageDescription(stage.type))
+                    .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
                 Picker("", selection: Binding(
                     get: { stage.type },
-                    set: { newType in
-                        updateStageType(index: index, from: stage.type, to: newType)
-                    }
+                    set: { newType in updateStageType(index: index, from: stage.type, to: newType) }
                 )) {
                     ForEach(PipelineStage.availableTypes, id: \.self) { type in
                         Text(type).tag(type)
                     }
                 }
                 .labelsHidden()
-                .frame(maxWidth: 170)
+                .frame(width: 26)
+                .help("Change stage type")
 
-                Spacer(minLength: 6)
-
-                // Reorder up
-                Button {
-                    viewModel.movePipelineStageUp(at: index)
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(index > 0 ? Theme.textSecondary : Theme.textSecondary.opacity(0.3))
+                Button { viewModel.movePipelineStageUp(at: index) } label: {
+                    Image(systemName: "arrow.up").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(index > 0 ? Theme.textSecondary : Theme.textMuted.opacity(0.5))
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .disabled(index == 0)
-                .help("Move stage up")
+                .buttonStyle(.plain).disabled(index == 0).help("Move up")
 
-                // Reorder down
-                Button {
-                    viewModel.movePipelineStageDown(at: index)
-                } label: {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(index < stageCount - 1 ? Theme.textSecondary : Theme.textSecondary.opacity(0.3))
+                Button { viewModel.movePipelineStageDown(at: index) } label: {
+                    Image(systemName: "arrow.down").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(index < stageCount - 1 ? Theme.textSecondary : Theme.textMuted.opacity(0.5))
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .disabled(index >= stageCount - 1)
-                .help("Move stage down")
+                .buttonStyle(.plain).disabled(index >= stageCount - 1).help("Move down")
 
-                // Validation indicator
-                Image(systemName: isValidJSON ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundStyle(isValidJSON ? Theme.green : Theme.crimson)
-                    .font(.system(size: 13))
-                    .help(isValidJSON ? "Valid JSON" : "Invalid JSON")
+                Toggle("", isOn: Binding(
+                    get: { viewModel.pipelineStages[index].enabled },
+                    set: { viewModel.pipelineStages[index].enabled = $0 }
+                ))
+                .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+                .help(stage.enabled ? "Disable stage" : "Enable stage")
 
-                // Enable/disable toggle
-                Toggle("", isOn: $viewModel.pipelineStages[index].enabled)
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .labelsHidden()
-                    .help(stage.enabled ? "Disable stage" : "Enable stage")
-
-                // Duplicate
-                Button {
-                    viewModel.duplicatePipelineStage(at: index)
-                } label: {
+                Button { viewModel.duplicatePipelineStage(at: index) } label: {
                     Image(systemName: "plus.square.on.square")
-                        .foregroundStyle(Theme.textSecondary)
-                        .font(.system(size: 12))
+                        .font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help("Duplicate stage")
+                .buttonStyle(.plain).help("Duplicate")
 
-                // Delete
-                Button {
-                    viewModel.removePipelineStage(at: index)
-                } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(Theme.crimson)
-                        .font(.system(size: 12))
+                Button { viewModel.pipelineStages[index].collapsed.toggle() } label: {
+                    Image(systemName: stage.collapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help("Remove stage")
+                .buttonStyle(.plain).help(stage.collapsed ? "Expand" : "Collapse")
+
+                Button { viewModel.removePipelineStage(at: index) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.danger)
+                        .frame(width: 22, height: 22).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help("Remove")
             }
 
-            if stage.collapsed {
-                // Collapsed: one-line body preview
-                Text(collapsedBodyPreview(stage.body))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(Theme.midnight)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Theme.border, lineWidth: 1)
-                    )
-            } else {
-                // Expanded: full editor
+            if !stage.collapsed {
                 MongoJSONEditor(
-                    text: $viewModel.pipelineStages[index].body,
+                    text: Binding(
+                        get: { viewModel.pipelineStages[index].body },
+                        set: { viewModel.pipelineStages[index].body = $0 }
+                    ),
                     isValid: isValidJSON,
                     isDisabled: !stage.enabled
                 )
-                .frame(minHeight: 110, idealHeight: 140)
+                .frame(minHeight: 120, idealHeight: 150, maxHeight: 220)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isValidJSON ? Theme.border : Theme.crimson.opacity(0.5), lineWidth: 1)
-                )
 
-                // Preview controls + preview output
-                stagePreviewSection(index: index, stage: stage, isValidJSON: isValidJSON)
+                stageMetaRow(index: index, stage: stage, isValidJSON: isValidJSON)
+                slowStageHint(for: stage)
+            } else {
+                Text(collapsedBodyPreview(stage.body))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Theme.codeString)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .codeSurface(padding: 8, cornerRadius: 6)
             }
         }
-        .cardStyle(padding: 12, cornerRadius: 8)
-        .opacity(stage.enabled ? 1.0 : 0.6)
+        .padding(12)
+        .background(Theme.surface1)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .shadow(color: Theme.shadowAmbient, radius: 6, y: 2)
+        .opacity(stage.enabled ? (draggedStageId == stage.id ? 0.4 : 1.0) : 0.55)
+        .onDrag {
+            draggedStageId = stage.id
+            return NSItemProvider(object: stage.id.uuidString as NSString)
+        }
+        .onDrop(of: [UTType.text], delegate: PipelineStageDropDelegate(
+            targetId: stage.id,
+            stages: viewModel.pipelineStages,
+            draggedId: $draggedStageId,
+            move: { from, to in viewModel.movePipelineStage(from: IndexSet(integer: from), to: to) }
+        ))
     }
 
-    @ViewBuilder
-    private func stagePreviewSection(index: Int, stage: PipelineStage, isValidJSON: Bool) -> some View {
+    private func stageMetaRow(index: Int, stage: PipelineStage, isValidJSON: Bool) -> some View {
         let previewing = viewModel.stagePreviewInProgress.contains(stage.id)
         let preview = viewModel.stagePreviews[stage.id]
         let previewError = viewModel.stagePreviewErrors[stage.id]
+        let hasTimingData = stage.ms != nil
 
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Button {
-                    Task {
-                        await viewModel.previewStage(at: index)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        if previewing {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .scaleEffect(0.7)
-                        } else {
-                            Image(systemName: "eye")
-                                .font(.system(size: 10))
-                        }
-                        Text(preview == nil ? "Preview output" : "Refresh preview")
-                            .font(.system(size: 10, weight: .medium))
-                    }
-                }
-                .buttonStyle(.ghost)
-                .disabled(!isValidJSON || !stage.enabled || previewing)
-
-                if preview != nil || previewError != nil {
-                    Button {
-                        viewModel.clearStagePreview(stageId: stage.id)
-                    } label: {
-                        Image(systemName: "xmark.circle")
-                            .font(.system(size: 10))
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Clear preview")
-                }
-
-                Spacer()
+        // Dot color reflects explain-derived timing first, preview second.
+        let dotColor: Color = {
+            if let ms = stage.ms {
+                return ms > 100 ? Theme.warning : Theme.success
             }
+            if previewError != nil { return Theme.danger }
+            if preview != nil { return Theme.success }
+            return Theme.textMuted
+        }()
 
-            if let preview = preview {
-                stagePreviewList(preview)
-            } else if let err = previewError {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.crimson)
-                    Text(err)
+        return HStack(spacing: 8) {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 7, height: 7)
+
+            if hasTimingData {
+                Text("Out:")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textSecondary)
+                Text("\(stage.outCount ?? 0) doc\((stage.outCount ?? 0) == 1 ? "" : "s")")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.textSoft)
+                if let ms = stage.ms {
+                    Text("·")
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Theme.crimson)
-                        .lineLimit(3)
+                        .foregroundStyle(Theme.textMuted)
+                    Text("\(formatStageMs(ms)) ms")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(ms > 100 ? Theme.warningDeep : Theme.textSoft)
                 }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.crimson.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                if let usedIndex = stage.usedIndex, !usedIndex.isEmpty {
+                    Text("·")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Theme.textMuted)
+                    Text("index: \(usedIndex)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Theme.successDeep)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            } else if let preview = preview {
+                Text("Out:")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textSecondary)
+                Text("\(preview.count) doc\(preview.count == 1 ? "" : "s")")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.textSoft)
+            } else if previewError != nil {
+                Text("Preview failed")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.dangerDeep)
+            } else if !isValidJSON {
+                Text("Invalid JSON")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.dangerDeep)
+            } else {
+                Text("Ready")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textMuted)
             }
+
+            Spacer()
+
+            Button {
+                Task { await viewModel.previewStage(at: index) }
+            } label: {
+                HStack(spacing: 4) {
+                    if previewing {
+                        ProgressView().controlSize(.mini).scaleEffect(0.7)
+                    } else {
+                        Image(systemName: "eye").font(.system(size: 10))
+                    }
+                    Text(preview == nil ? "Preview" : "Refresh")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(Theme.primaryDeep)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isValidJSON || !stage.enabled || previewing)
         }
+        .padding(.top, 2)
     }
 
-    private func stagePreviewList(_ preview: [[String: Any]]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("sample output")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Theme.textSecondary)
-                    .textCase(.uppercase)
-                    .tracking(0.6)
-                Text("(\(preview.count) doc\(preview.count == 1 ? "" : "s"))")
-                    .font(.system(size: 10))
-                    .foregroundStyle(Theme.textSecondary)
-                Spacer()
-            }
-            if preview.isEmpty {
-                Text("(no documents)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Theme.textSecondary)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.midnight)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(preview.enumerated()), id: \.offset) { _, doc in
-                        Text(prettyPrintJSON(doc))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.white)
-                            .lineLimit(6)
-                            .truncationMode(.tail)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(6)
-                            .background(Theme.midnight)
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
+    private func formatStageMs(_ ms: Double) -> String {
+        if ms < 10 { return String(format: "%.1f", ms) }
+        return String(format: "%.0f", ms)
+    }
+
+    /// Show a warning-card hint when a stage took > 100 ms. For $match stages
+    /// we surface the first non-operator field as a candidate index hint;
+    /// for other stage types the hint is generic.
+    @ViewBuilder
+    private func slowStageHint(for stage: PipelineStage) -> some View {
+        if let ms = stage.ms, ms > 100, (stage.usedIndex == nil || stage.usedIndex?.isEmpty == true) {
+            let field = stage.type == "$match" ? firstMatchField(in: stage.body) : nil
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.warningDeep)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Slow stage · \(formatStageMs(ms)) ms")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Theme.warningDeep)
+                    if let field {
+                        Text("Consider index hint on `{ \(field): 1 }`")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Theme.textSoft)
+                    } else {
+                        Text("No index used — review the stage for a candidate field.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textSoft)
                     }
                 }
+                Spacer()
             }
+            .padding(8)
+            .background(Theme.warningTint)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
     }
 
-    /// Apply a new stage type, preserving the user's custom body unless the body
-    /// still matches the previous type's template exactly.
-    private func updateStageType(index: Int, from oldType: String, to newType: String) {
-        @Bindable var viewModel = viewModel
-        viewModel.pipelineStages[index].type = newType
-        let currentBody = viewModel.pipelineStages[index].body
-        let oldTemplate = PipelineStage.template(for: oldType)
-        if currentBody == oldTemplate || currentBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            viewModel.pipelineStages[index].body = PipelineStage.template(for: newType)
+    /// Extract the first non-operator field name from a `$match` body. Returns
+    /// nil for empty matches or pure operator bodies like `{ "$and": [...] }`.
+    private func firstMatchField(in body: String) -> String? {
+        guard let data = body.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed),
+              let dict = parsed as? [String: Any] else { return nil }
+        for key in dict.keys where !key.hasPrefix("$") {
+            return key
         }
+        return nil
     }
 
     private func collapsedBodyPreview(_ body: String) -> String {
@@ -418,177 +592,322 @@ struct AggregationView: View {
         return collapsed.isEmpty ? "(empty)" : collapsed
     }
 
-    // MARK: - Results Panel
+    private func updateStageType(index: Int, from oldType: String, to newType: String) {
+        viewModel.pipelineStages[index].type = newType
+        let currentBody = viewModel.pipelineStages[index].body
+        let oldTemplate = PipelineStage.template(for: oldType)
+        if currentBody == oldTemplate || currentBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            viewModel.pipelineStages[index].body = PipelineStage.template(for: newType)
+        }
+    }
 
-    private var resultsPanel: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 8) {
-                Text("RESULTS")
-                    .sectionHeaderStyle()
+    // MARK: - Stage type pill mapping
 
-                if !viewModel.aggregationResults.isEmpty {
-                    Text("(\(viewModel.aggregationResults.count) doc\(viewModel.aggregationResults.count == 1 ? "" : "s"))")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textSecondary)
-                }
+    private func stageBadgeKind(_ type: String) -> BadgeKind {
+        switch type {
+        case "$match":   return .success
+        case "$group":   return .accent
+        case "$project": return .info
+        case "$lookup":  return .violet
+        case "$sort":    return .neutral
+        case "$limit", "$skip": return .danger
+        case "$unwind":  return .violet
+        case "$addFields", "$set", "$replaceRoot", "$replaceWith": return .info
+        case "$count":   return .accent
+        case "$facet":   return .violet
+        default:         return .neutral
+        }
+    }
 
-                if viewModel.aggregationTruncated {
-                    Text("capped")
-                        .pillBadge(color: Theme.amber)
-                        .help("Result set reached the \(viewModel.aggregationResultLimit)-document limit. Raise the limit to see more.")
-                }
+    private func stageDescription(_ type: String) -> String {
+        switch type {
+        case "$match":      return "filter documents"
+        case "$group":      return "group and accumulate"
+        case "$project":    return "shape output"
+        case "$lookup":     return "join collection"
+        case "$sort":       return "reorder stream"
+        case "$limit":      return "limit output"
+        case "$skip":       return "skip documents"
+        case "$unwind":     return "expand array"
+        case "$addFields":  return "compute fields"
+        case "$set":        return "set fields"
+        case "$count":      return "count documents"
+        case "$facet":      return "parallel pipelines"
+        case "$replaceRoot":return "promote subdoc"
+        case "$replaceWith":return "promote subdoc"
+        default:            return "stage"
+        }
+    }
 
-                Spacer()
-            }
-            .padding(14)
+    // MARK: - Preview column (right)
 
-            ThemedDivider()
+    private var previewColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            previewHead
 
-            // Content
             if viewModel.isLoading {
-                VStack(spacing: 16) {
-                    ProgressView()
-                        .controlSize(.large)
-                    Text("Running aggregation...")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.textSecondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                runningView
             } else if let error = viewModel.aggregationError {
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 36))
-                        .foregroundStyle(Theme.crimson)
-                    Text("Aggregation Error")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text(error)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.crimson)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 20)
-                        .textSelection(.enabled)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                aggregationErrorView(error)
             } else if viewModel.aggregationResults.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                        .font(.system(size: 40))
-                        .foregroundStyle(Theme.textSecondary)
-                    Text("No results yet")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text("Build your pipeline and press ⌘↵ to run.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.textSecondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                emptyPreviewView
             } else {
-                ScrollView {
+                ScrollView(.vertical, showsIndicators: true) {
                     LazyVStack(spacing: 10) {
-                        ForEach(Array(viewModel.aggregationResults.enumerated()), id: \.offset) { index, doc in
-                            ResultDocumentCard(index: index, doc: doc)
+                        ForEach(Array(viewModel.aggregationResults.enumerated()), id: \.offset) { i, doc in
+                            previewCard(doc: doc, index: i, total: viewModel.aggregationResults.count)
                         }
                     }
-                    .padding(14)
+                    .padding(.trailing, 4)
                 }
             }
         }
-        .background(Theme.midnight)
     }
 
-    // MARK: - Bottom Toolbar
-
-    private var bottomToolbar: some View {
-        HStack(spacing: 12) {
-            Button {
-                showCodeGenSheet = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    Text("Generate Code")
-                }
+    private var previewHead: some View {
+        HStack(spacing: 10) {
+            Text("Live preview")
+                .sectionHeaderStyle()
+            if !viewModel.aggregationResults.isEmpty {
+                Text("\(viewModel.aggregationResults.count) document\(viewModel.aggregationResults.count == 1 ? "" : "s")")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
             }
-            .buttonStyle(.ghost)
-
             Spacer()
-
-            Text("Limit")
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.textSecondary)
-            Picker("", selection: Binding(
-                get: { viewModel.aggregationResultLimit },
-                set: { viewModel.aggregationResultLimit = $0 }
-            )) {
-                Text("100").tag(100)
-                Text("500").tag(500)
-                Text("1000").tag(1000)
-                Text("5000").tag(5000)
-                Text("∞").tag(0)
+            if viewModel.aggregationTruncated {
+                Text("capped").pillBadge(.warning)
             }
-            .labelsHidden()
-            .frame(width: 80)
-            .help("Maximum number of result documents to materialize")
-
             Button {
-                showLoadPipelineSheet = true
+                Task { await viewModel.runAggregation() }
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "folder")
-                    Text("Load")
+                Image(systemName: "arrow.clockwise")
+                    .toolbarIconButton()
+            }
+            .buttonStyle(.plain)
+            .help("Re-run pipeline")
+            .disabled(viewModel.isLoading)
+        }
+        .padding(.bottom, 10)
+    }
+
+    private func previewCard(doc: [String: Any], index: Int, total: Int) -> some View {
+        let pills = detectPreviewPills(in: doc)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ForEach(pills) { pill in
+                    Text(pill.label).pillBadge(pill.kind)
+                }
+                Text("document \(index + 1) / \(total)")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(orderedDocKeys(Array(doc.keys)), id: \.self) { key in
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("\"\(key)\"")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.122, green: 0.302, blue: 0.549))
+                            .frame(width: 180, alignment: .leading)
+                        previewValueView(doc[key])
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
-            .buttonStyle(.ghost)
-
-            Button {
-                savePipelineName = ""
-                showSavePipelineSheet = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "square.and.arrow.down")
-                    Text("Save")
-                }
-            }
-            .buttonStyle(.ghost)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Theme.surface.opacity(0.3))
+        .padding(.vertical, 12)
+        .background(Theme.surface1)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .shadow(color: Theme.shadowAmbient, radius: 6, y: 2)
+        .contextMenu {
+            Button("Copy JSON") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(prettyPrintJSON(doc), forType: .string)
+            }
+        }
     }
 
-    // MARK: - No Collection View
+    @ViewBuilder
+    private func previewValueView(_ value: Any?) -> some View {
+        if let s = value as? String {
+            Text("\"\(s)\"")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.successDeep)
+                .lineLimit(2)
+                .truncationMode(.tail)
+        } else if let b = value as? Bool {
+            Text(b ? "true" : "false")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.violetDeep)
+        } else if let n = value as? NSNumber {
+            Text(formatNumber(n))
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.warningDeep)
+        } else if value is NSNull {
+            Text("null")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.textMuted)
+        } else if let arr = value as? [Any] {
+            Text("[ \(arr.count) item\(arr.count == 1 ? "" : "s") ]")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.textMuted)
+        } else if let dict = value as? [String: Any] {
+            Text("{ \(dict.keys.count) field\(dict.keys.count == 1 ? "" : "s") }")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.textMuted)
+        } else if let v = value {
+            Text(String(describing: v))
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.textSoft)
+                .lineLimit(2)
+        } else {
+            Text("—")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.textMuted)
+        }
+    }
 
-    private var noCollectionView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .font(.system(size: 40))
+    private struct DetectedPill: Identifiable {
+        let id = UUID()
+        let label: String
+        let kind: BadgeKind
+    }
+
+    private func detectPreviewPills(in doc: [String: Any]) -> [DetectedPill] {
+        var pills: [DetectedPill] = []
+        if let tier = doc["tier"] as? String {
+            pills.append(DetectedPill(label: "tier · \(tier)", kind: .accent))
+        } else if let id = doc["_id"] as? String, id.count < 24 {
+            pills.append(DetectedPill(label: id, kind: .accent))
+        }
+        if let status = doc["status"] as? String {
+            let kind: BadgeKind
+            switch status.lowercased() {
+            case "active", "success", "ok": kind = .success
+            case "pending":                  kind = .warning
+            case "failed", "error":          kind = .danger
+            default:                         kind = .neutral
+            }
+            pills.append(DetectedPill(label: status, kind: kind))
+        }
+        return pills
+    }
+
+    private func orderedDocKeys(_ keys: [String]) -> [String] {
+        let priority = ["_id", "tier", "status", "name", "label", "key", "count", "total", "sum", "avg", "revenue", "orders"]
+        var ordered: [String] = []
+        var seen = Set<String>()
+        for p in priority {
+            if let m = keys.first(where: { $0.lowercased() == p.lowercased() }), !seen.contains(m) {
+                ordered.append(m); seen.insert(m)
+            }
+        }
+        for k in keys where !seen.contains(k) { ordered.append(k); seen.insert(k) }
+        return ordered
+    }
+
+    private func formatNumber(_ n: NSNumber) -> String {
+        let s = n.stringValue
+        if let intVal = Int(s), abs(intVal) >= 1000 { return intVal.formatted() }
+        if let d = Double(exactly: n), abs(d) >= 1000 {
+            let f = NumberFormatter()
+            f.numberStyle = .decimal
+            f.maximumFractionDigits = 2
+            return f.string(from: n) ?? s
+        }
+        return s
+    }
+
+    // MARK: - State views
+
+    private var runningView: some View {
+        VStack(spacing: 12) {
+            ProgressView().controlSize(.regular)
+            Text("Running aggregation…")
+                .font(.system(size: 12.5))
                 .foregroundStyle(Theme.textSecondary)
-            Text("Select a collection")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.white)
-            Text("Choose a database and collection from the sidebar to build aggregation pipelines.")
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.textSecondary)
-                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Code Generation Sheet
+    private func aggregationErrorView(_ error: String) -> some View {
+        VStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Theme.dangerTint)
+                    .frame(width: 56, height: 56)
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Theme.dangerDeep)
+            }
+            Text("Aggregation error")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text(error)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.dangerDeep)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyPreviewView: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Theme.primaryTint)
+                    .frame(width: 56, height: 56)
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Theme.primaryDeep)
+            }
+            Text("No results yet")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text("Build your pipeline and press ⌘↩ to run.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var noCollectionView: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Theme.primaryTint)
+                    .frame(width: 56, height: 56)
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Theme.primaryDeep)
+            }
+            Text("Select a collection")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text("Choose a database and collection from the sidebar to build aggregation pipelines.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Sheets
 
     private var codeGenerationSheet: some View {
         VStack(spacing: 16) {
             HStack {
-                Text("Generate Aggregation Code")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
+                Text("Generate aggregation code")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
                 Spacer()
-                Button("Done") {
-                    showCodeGenSheet = false
-                }
-                .buttonStyle(.accent)
+                Button("Done") { showCodeGenSheet = false }
+                    .buttonStyle(.accent)
             }
 
             Picker("Language", selection: $codeGenLanguage) {
@@ -603,22 +922,18 @@ struct AggregationView: View {
             ScrollView {
                 Text(code)
                     .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .padding(12)
+                    .foregroundStyle(Theme.codeFg)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.midnight)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .codeSurface(padding: 12, cornerRadius: 8)
                     .textSelection(.enabled)
             }
 
             CopyButton(text: code, label: "Copy to Clipboard")
         }
         .padding(20)
-        .frame(width: 600, height: 450)
-        .background(Theme.surface)
+        .frame(width: 620, height: 470)
+        .background(Theme.surface0)
     }
-
-    // MARK: - Save Pipeline Sheet
 
     private var savePipelineSheet: some View {
         let existsWithSameName = viewModel.savedPipelines.contains {
@@ -627,35 +942,28 @@ struct AggregationView: View {
                 && $0.collection == (viewModel.activeTab.selectedCollection ?? "")
         }
         return VStack(spacing: 16) {
-            Text("Save Pipeline")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.white)
+            Text("Save pipeline")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Pipeline Name")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Theme.textSecondary)
-                TextField("My Pipeline", text: $savePipelineName)
-                    .textFieldStyle(.themed)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Pipeline name").sectionHeaderStyle()
+                TextField("My pipeline", text: $savePipelineName)
+                    .textFieldStyle(.themedSans)
                 if existsWithSameName && !savePipelineName.isEmpty {
                     HStack(spacing: 4) {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 10))
+                        Image(systemName: "info.circle").font(.system(size: 10))
                         Text("A pipeline with this name exists — it will be overwritten.")
                             .font(.system(size: 10))
                     }
-                    .foregroundStyle(Theme.amber)
+                    .foregroundStyle(Theme.warningDeep)
                 }
             }
 
             HStack {
-                Button("Cancel") {
-                    showSavePipelineSheet = false
-                }
-                .buttonStyle(.ghost)
-
+                Button("Cancel") { showSavePipelineSheet = false }
+                    .buttonStyle(.ghost)
                 Spacer()
-
                 Button(existsWithSameName ? "Overwrite" : "Save") {
                     if !savePipelineName.isEmpty {
                         viewModel.savePipeline(name: savePipelineName)
@@ -668,31 +976,27 @@ struct AggregationView: View {
         }
         .padding(20)
         .frame(width: 420)
-        .background(Theme.surface)
+        .background(Theme.surface0)
     }
-
-    // MARK: - Load Pipeline Sheet
 
     private var loadPipelineSheet: some View {
         VStack(spacing: 16) {
             HStack {
-                Text("Load Pipeline")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
+                Text("Load pipeline")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
                 Spacer()
-                Button("Done") {
-                    showLoadPipelineSheet = false
-                }
-                .buttonStyle(.accent)
+                Button("Done") { showLoadPipelineSheet = false }
+                    .buttonStyle(.accent)
             }
 
             if viewModel.savedPipelines.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "folder")
-                        .font(.system(size: 30))
-                        .foregroundStyle(Theme.textSecondary)
+                        .font(.system(size: 26))
+                        .foregroundStyle(Theme.textMuted)
                     Text("No saved pipelines")
-                        .font(.system(size: 14))
+                        .font(.system(size: 13))
                         .foregroundStyle(Theme.textSecondary)
                 }
                 .frame(maxHeight: .infinity)
@@ -703,10 +1007,10 @@ struct AggregationView: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(pipeline.name)
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(.white)
-                                    Text("\(pipeline.database).\(pipeline.collection) - \(pipeline.stages.count) stages")
-                                        .font(.system(size: 12))
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(Theme.textPrimary)
+                                    Text("\(pipeline.database).\(pipeline.collection) · \(pipeline.stages.count) stage\(pipeline.stages.count == 1 ? "" : "s")")
+                                        .font(.system(size: 11, design: .monospaced))
                                         .foregroundStyle(Theme.textSecondary)
                                 }
 
@@ -725,7 +1029,7 @@ struct AggregationView: View {
                                     showDeletePipelineAlert = true
                                 } label: {
                                     Image(systemName: "trash")
-                                        .foregroundStyle(Theme.crimson)
+                                        .foregroundStyle(Theme.danger)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -737,7 +1041,7 @@ struct AggregationView: View {
         }
         .padding(20)
         .frame(width: 500, height: 400)
-        .background(Theme.surface)
+        .background(Theme.surface0)
     }
 
     // MARK: - Helpers
@@ -748,59 +1052,7 @@ struct AggregationView: View {
     }
 }
 
-// MARK: - Result Document Card (with copy feedback)
-
-@MainActor
-private struct ResultDocumentCard: View {
-    let index: Int
-    let doc: [String: Any]
-    @State private var justCopied = false
-
-    var body: some View {
-        let jsonString = prettyPrintJSON(doc)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Document \(index + 1)")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Theme.green)
-
-                Spacer()
-
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(jsonString, forType: .string)
-                    withAnimation(.easeOut(duration: 0.15)) { justCopied = true }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                        withAnimation(.easeOut(duration: 0.2)) { justCopied = false }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
-                        if justCopied {
-                            Text("Copied")
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                    }
-                    .foregroundStyle(justCopied ? Theme.green : Theme.textSecondary)
-                }
-                .toolbarIconButton(isActive: justCopied)
-                .buttonStyle(.plain)
-                .help("Copy JSON")
-            }
-
-            ThemedDivider()
-
-            Text(jsonString)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.white)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .cardStyle(padding: 10, cornerRadius: 8)
-    }
-}
-
-// MARK: - Copy Button (with feedback)
+// MARK: - Copy button (used in code-gen sheet)
 
 @MainActor
 private struct CopyButton: View {
@@ -823,5 +1075,41 @@ private struct CopyButton: View {
             }
         }
         .buttonStyle(.ghost)
+    }
+}
+
+// MARK: - Drag-and-drop reordering for pipeline stages
+
+private struct PipelineStageDropDelegate: DropDelegate {
+    let targetId: UUID
+    let stages: [PipelineStage]
+    @Binding var draggedId: UUID?
+    let move: (Int, Int) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedId,
+              draggedId != targetId,
+              let from = stages.firstIndex(where: { $0.id == draggedId }),
+              let to = stages.firstIndex(where: { $0.id == targetId })
+        else { return }
+        // SwiftUI's onMove uses an "insertion index": dropping after the
+        // target needs `to + 1`, dropping before needs `to`. Match the
+        // visual drag direction to that semantic.
+        let insertion = from < to ? to + 1 : to
+        move(from, insertion)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedId = nil
+        return true
+    }
+
+    func dropExited(info: DropInfo) {
+        // Keep draggedId set until performDrop so visual fade stays through
+        // hover transitions between cards.
     }
 }

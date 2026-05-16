@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Insert document</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    min-height: 0;
+    background: var(--surface-0);
+  }
+  .editor-body {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 16px;
+    padding: 16px;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .editor-pane {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .editor-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 4px 10px;
+  }
+  .editor-header .title {
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .editor-header .sub {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .code-surface {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 18px 18px 18px 0;
+    line-height: 1.75;
+    font-size: 12.5px;
+    position: relative;
+  }
+  .code-surface .gut {
+    color: var(--code-muted);
+    display: inline-block;
+    width: 36px;
+    text-align: right;
+    padding-right: 14px;
+    user-select: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .code-surface .ln {
+    display: block;
+    padding-left: 4px;
+  }
+  .code-surface .ln.is-warn { background: rgba(217, 119, 6, 0.10); border-left: 2px solid var(--warning); margin-left: -2px; }
+  .code-surface .ln.is-err  { background: rgba(220, 38, 38, 0.10); border-left: 2px solid var(--danger);  margin-left: -2px; }
+  .code-surface .ln.is-cur  { background: rgba(255,255,255,0.04); }
+  .code-surface .squiggle {
+    text-decoration: underline wavy var(--warning);
+    text-decoration-skip-ink: none;
+    text-underline-offset: 3px;
+  }
+  .code-surface .squiggle-err {
+    text-decoration: underline wavy var(--danger);
+    text-decoration-skip-ink: none;
+    text-underline-offset: 3px;
+  }
+
+  .lint-panel {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 16px 14px;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .lint-panel h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 2px;
+  }
+  .lint-panel .sub {
+    font-size: 11.5px;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+  .lint-summary {
+    display: flex; gap: 6px;
+    margin-bottom: 14px;
+  }
+  .lint-list { display: flex; flex-direction: column; gap: 8px; overflow: auto; padding-right: 4px; }
+  .lint-item {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px;
+    padding: 10px 10px;
+    border-radius: var(--r-md);
+    background: var(--surface-3);
+  }
+  .lint-item.is-warn { background: #FEF8E9; }
+  .lint-item.is-err  { background: #FEF2F2; }
+  .lint-item.is-info { background: #ECF3FE; }
+  .lint-item .marker {
+    width: 8px; height: 8px; border-radius: 50%;
+    margin-top: 5px;
+  }
+  .lint-item.is-warn .marker { background: var(--warning); }
+  .lint-item.is-err  .marker { background: var(--danger); }
+  .lint-item.is-info .marker { background: var(--info); }
+  .lint-item .label {
+    font-size: 12px;
+    color: var(--fg-soft);
+    line-height: 1.4;
+  }
+  .lint-item .ln {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+  .lint-item .label code {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    background: rgba(0,0,0,0.04);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  .editor-footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--surface-1);
+    box-shadow: 0 -1px 2px rgba(17,24,39,0.03);
+  }
+  .editor-footer .meta {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+const tabs = [
+  { db: 'app_prod', coll: 'users',    dotColor: '#16A34A' },
+  { db: 'app_prod', coll: 'users · insert', dotColor: '#F2673C' },
+  { db: 'analytics', coll: 'events',  dotColor: '#2563EB' },
+];
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'explorer', activeColl: { db: 'app_prod', coll: 'users' } },
+  tabs,
+  activeTab: 1,
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="crumb-db">app_prod</span>
+        <span class="crumb-sep">›</span>
+        <span class="crumb-coll">users</span>
+        <span class="crumb-sep">›</span>
+        <span class="mono" style="color:var(--primary-700);font-weight:600;">insert</span>
+      </span>
+      <span class="pill is-accent">unsaved</span>
+      <span class="toolbar-spacer"></span>
+      <button class="btn">⌘⇧F &nbsp; Format</button>
+      <button class="btn">Validate</button>
+      <span class="seg">
+        <span class="seg-item is-active">JSON</span>
+        <span class="seg-item">EJSON</span>
+      </span>
+    </div>
+
+    <div class="editor-body">
+      <div class="editor-pane code" style="padding:0;">
+        <div class="editor-header" style="padding:14px 18px 8px;color:var(--code-fg);">
+          <span class="title" style="color:var(--code-fg);">Insert document</span>
+          <span class="sub" style="color:var(--code-muted);">app_prod.users · new BSON document</span>
+          <span class="spacer" style="flex:1;"></span>
+          <span class="pill is-mono" style="background:rgba(255,255,255,0.06);color:#9CA3AF;">UTF-8</span>
+          <span class="pill is-mono" style="background:rgba(255,255,255,0.06);color:#9CA3AF;">LF</span>
+        </div>
+        <pre class="code-surface" style="margin:0;background:transparent;color:var(--code-fg);"><span class="ln"><span class="gut"> 1</span><span class="tok-pun">{</span></span>
+<span class="ln"><span class="gut"> 2</span>  <span class="tok-key">"_id"</span><span class="tok-pun">:</span> <span class="tok-kw">ObjectId</span><span class="tok-pun">(</span><span class="tok-str">"6624c0f1a3b81e0042c19fdc"</span><span class="tok-pun">),</span></span>
+<span class="ln"><span class="gut"> 3</span>  <span class="tok-key">"email"</span><span class="tok-pun">:</span> <span class="tok-str">"linnea.skog@stitch.co"</span><span class="tok-pun">,</span></span>
+<span class="ln is-warn"><span class="gut"> 4</span>  <span class="tok-key">"tier"</span><span class="tok-pun">:</span> <span class="tok-str squiggle">"PRO"</span><span class="tok-pun">,</span></span>
+<span class="ln"><span class="gut"> 5</span>  <span class="tok-key">"createdAt"</span><span class="tok-pun">:</span> <span class="tok-kw">ISODate</span><span class="tok-pun">(</span><span class="tok-str">"2026-05-15T13:42:00.000Z"</span><span class="tok-pun">),</span></span>
+<span class="ln is-warn"><span class="gut"> 6</span>  <span class="tok-key">"profile"</span><span class="tok-pun">:</span> <span class="tok-pun">{</span></span>
+<span class="ln"><span class="gut"> 7</span>    <span class="tok-key">"firstName"</span><span class="tok-pun">:</span> <span class="tok-str">"Linnéa"</span><span class="tok-pun">,</span></span>
+<span class="ln"><span class="gut"> 8</span>    <span class="tok-key">"lastName"</span><span class="tok-pun">:</span> <span class="tok-str">"Skog"</span><span class="tok-pun">,</span></span>
+<span class="ln is-warn"><span class="gut"> 9</span>    <span class="tok-key squiggle">"locale"</span><span class="tok-pun">:</span> <span class="tok-str">"sv_SE"</span></span>
+<span class="ln"><span class="gut">10</span>  <span class="tok-pun">},</span></span>
+<span class="ln is-cur"><span class="gut">11</span>  <span class="tok-key">"flags"</span><span class="tok-pun">:</span> <span class="tok-pun">[</span><span class="tok-str">"early-access"</span><span class="tok-pun">,</span> <span class="tok-str">"newsletter-opt-in"</span><span class="tok-pun">],</span></span>
+<span class="ln"><span class="gut">12</span>  <span class="tok-key">"verified"</span><span class="tok-pun">:</span> <span class="tok-bool">false</span><span class="tok-pun">,</span></span>
+<span class="ln is-err"><span class="gut">13</span>  <span class="tok-key squiggle-err">"loginCount"</span><span class="tok-pun">:</span> <span class="tok-str squiggle-err">"0"</span><span class="tok-pun">,</span></span>
+<span class="ln"><span class="gut">14</span>  <span class="tok-key">"_v"</span><span class="tok-pun">:</span> <span class="tok-num">1</span></span>
+<span class="ln"><span class="gut">15</span><span class="tok-pun">}</span></span></pre>
+      </div>
+
+      <aside class="lint-panel">
+        <h3>Schema lint</h3>
+        <div class="sub">Compared against <span class="mono">users</span> validator · v2.1</div>
+        <div class="lint-summary">
+          <span class="pill is-danger">1 error</span>
+          <span class="pill is-warning">3 warnings</span>
+          <span class="pill is-info">1 hint</span>
+        </div>
+        <div class="lint-list">
+          <div class="lint-item is-err">
+            <span class="marker"></span>
+            <div>
+              <div class="label"><strong>loginCount</strong> must be <code>int32</code>, got <code>string "0"</code>.</div>
+              <div class="ln">line 13 · validator: $jsonSchema</div>
+            </div>
+          </div>
+          <div class="lint-item is-warn">
+            <span class="marker"></span>
+            <div>
+              <div class="label">Enum mismatch: <code>tier</code> expects <code>"free" | "pro" | "team"</code>. <code>"PRO"</code> looks like a case error.</div>
+              <div class="ln">line 4</div>
+            </div>
+          </div>
+          <div class="lint-item is-warn">
+            <span class="marker"></span>
+            <div>
+              <div class="label">Field <code>profile.middleName</code> is required in 92% of documents but is missing here.</div>
+              <div class="ln">line 6</div>
+            </div>
+          </div>
+          <div class="lint-item is-warn">
+            <span class="marker"></span>
+            <div>
+              <div class="label">Locale format <code>"sv_SE"</code> doesn't match collection pattern <code>BCP‑47 (xx-XX)</code>. Try <code>"sv-SE"</code>.</div>
+              <div class="ln">line 9</div>
+            </div>
+          </div>
+          <div class="lint-item is-info">
+            <span class="marker"></span>
+            <div>
+              <div class="label">Consider populating <code>signupSource</code> — present in 87% of documents.</div>
+              <div class="ln">document-wide</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <div class="editor-footer">
+      <span class="meta">14 lines · 412 B BSON · cursor 11:36</span>
+      <span class="spacer" style="flex:1;"></span>
+      <button class="btn">Cancel</button>
+      <button class="btn is-disabled">Insert &amp; clone</button>
+      <button class="btn btn-primary">Insert document</button>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

@@ -70,7 +70,10 @@ final class DumpRestoreService {
         database: String,
         collection: String? = nil,
         outputPath: String,
-        gzip: Bool = false
+        gzip: Bool = false,
+        oplog: Bool = false,
+        numParallel: Int = 4,
+        excludeIndexes: Bool = false
     ) -> AsyncStream<String> {
         guard let toolPath = findTool("mongodump") else {
             return AsyncStream { continuation in
@@ -93,6 +96,19 @@ final class DumpRestoreService {
             arguments.append("--gzip")
         }
 
+        // --oplog requires a full-instance dump (no --db / --collection).
+        // mongodump rejects the combination, so silently skip if scoped.
+        if oplog, collection == nil {
+            arguments.append("--oplog")
+        }
+
+        if excludeIndexes {
+            arguments.append("--excludeIndexes")
+        }
+
+        let parallel = max(1, numParallel)
+        arguments.append("--numParallelCollections=\(parallel)")
+
         return runProcess(executablePath: toolPath, arguments: arguments)
     }
 
@@ -103,7 +119,14 @@ final class DumpRestoreService {
         uri: String,
         inputPath: String,
         database: String? = nil,
-        drop: Bool = false
+        drop: Bool = false,
+        oplogReplay: Bool = false,
+        numParallel: Int = 4,
+        noIndexRestore: Bool = false,
+        maintainInsertionOrder: Bool = false,
+        gzip: Bool = false,
+        stopOnError: Bool = false,
+        noObjcheck: Bool = false
     ) -> AsyncStream<String> {
         guard let toolPath = findTool("mongorestore") else {
             return AsyncStream { continuation in
@@ -112,18 +135,46 @@ final class DumpRestoreService {
             }
         }
 
-        var arguments: [String] = [
-            "--uri", uri,
-            inputPath
-        ]
+        // Build flag list, then append the positional input path at the end so
+        // mongorestore treats it as the dump-directory positional argument.
+        var flags: [String] = ["--uri", uri]
 
         if let database = database, !database.isEmpty {
-            arguments.insert(contentsOf: ["--db", database], at: arguments.count - 1)
+            flags.append(contentsOf: ["--db", database])
         }
 
         if drop {
-            arguments.insert("--drop", at: arguments.count - 1)
+            flags.append("--drop")
         }
+
+        if oplogReplay {
+            flags.append("--oplogReplay")
+        }
+
+        if noIndexRestore {
+            flags.append("--noIndexRestore")
+        }
+
+        if maintainInsertionOrder {
+            flags.append("--maintainInsertionOrder")
+        }
+
+        if gzip {
+            flags.append("--gzip")
+        }
+
+        if stopOnError {
+            flags.append("--stopOnError")
+        }
+
+        if noObjcheck {
+            flags.append("--noObjcheck")
+        }
+
+        let parallel = max(1, numParallel)
+        flags.append("--numParallelCollections=\(parallel)")
+
+        let arguments = flags + [inputPath]
 
         return runProcess(executablePath: toolPath, arguments: arguments)
     }

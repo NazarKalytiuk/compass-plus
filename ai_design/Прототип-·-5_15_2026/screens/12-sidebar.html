@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Sidebar close-up</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    background: var(--surface-0);
+    min-height: 0;
+  }
+  .closeup {
+    background: var(--surface-2);
+    padding: 18px 14px;
+    display: flex; flex-direction: column;
+    gap: 14px;
+    overflow: auto;
+  }
+  /* same elements as sidebar but slightly enlarged for a close-up read */
+  .closeup .brand { padding: 4px 6px 8px; }
+  .closeup .brand .brand-mark { width: 28px; height: 28px; border-radius: 8px; }
+  .closeup .brand .brand-word { font-size: 16px; }
+
+  .closeup .conn-switch { padding: 10px 12px; }
+  .closeup .conn-switch .conn-name { font-size: 13px; }
+  .closeup .conn-switch .conn-host { font-size: 11px; }
+
+  .closeup .db-row, .closeup .coll-row, .closeup .nav-row {
+    padding: 8px 10px;
+    font-size: 13px;
+    grid-template-columns: 16px 18px 1fr auto;
+  }
+  .closeup .coll-row { padding-left: 36px; }
+  .closeup .nav-row { padding: 9px 10px; }
+
+  .annotations {
+    padding: 22px 32px;
+    display: flex; flex-direction: column;
+    gap: 14px;
+    overflow: auto;
+    background: var(--surface-0);
+  }
+  .annotations .h-eyebrow { color: var(--muted-2); }
+  .annotations h2 {
+    font-family: var(--font-display);
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin: 4px 0 8px;
+  }
+  .annotations .lede {
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+    margin-bottom: 12px;
+    max-width: 56ch;
+  }
+
+  .spec-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .spec-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 14px 16px;
+  }
+  .spec-card .title {
+    font-family: var(--font-display);
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .spec-card .ref {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--muted-2);
+    background: var(--surface-3);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  .spec-card .body {
+    font-size: 12px; color: var(--muted); line-height: 1.55;
+  }
+  .spec-card .body code {
+    font-family: var(--font-mono);
+    background: var(--surface-3);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: var(--fg);
+  }
+
+  .states-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .state-row {
+    background: var(--surface-2);
+    border-radius: var(--r-md);
+    padding: 4px 4px 4px 12px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px;
+    color: var(--muted);
+    height: 38px;
+  }
+  .state-row .lbl { font-weight: 600; color: var(--fg-soft); }
+  .preview-nav {
+    background: var(--surface-1);
+    border-radius: var(--r-md);
+    padding: 6px 10px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px;
+    font-family: var(--font-ui);
+  }
+  .preview-nav.is-default {}
+  .preview-nav.is-hover { background: var(--surface-hover); box-shadow: var(--shadow-sm); }
+  .preview-nav.is-active {
+    background: var(--surface-active);
+    color: var(--primary-700);
+    font-weight: 600;
+    position: relative;
+  }
+  .preview-nav.is-active::before {
+    content: ""; position: absolute; left: -3px; top: 6px; bottom: 6px;
+    width: 3px; border-radius: 3px; background: var(--primary);
+  }
+  .preview-nav.is-focus {
+    box-shadow: 0 0 0 2px var(--primary-50), 0 0 0 3px var(--primary);
+  }
+  .preview-nav.is-disabled { opacity: 0.4; }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+function renderSidebarCloseup() {
+  return `
+  <aside class="closeup">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <span class="brand-word">Compass<span class="brand-plus">+</span></span>
+      <span class="spacer" style="flex:1;"></span>
+      <span class="dot is-success" title="Connected"></span>
+    </div>
+
+    <div class="conn-switch">
+      <span class="dot is-success"></span>
+      <span class="conn-meta">
+        <div class="conn-name">production-cluster</div>
+        <div class="conn-host">mongodb+srv://app.5kx2.mongodb.net</div>
+      </span>
+      <span class="chev">${Shell.ICONS.chevDown}</span>
+    </div>
+
+    <div class="search-field">
+      <span class="ic">${Shell.ICONS.search}</span>
+      <input value="ord" placeholder="Search databases…">
+      <span class="mono" style="font-size:10px;color:var(--muted-2);">⌘K</span>
+    </div>
+
+    <div>
+      <div class="section-head">Databases</div>
+      <div class="db-tree">
+        <div class="db-row is-open">
+          <span class="chev">${Shell.ICONS.chev}</span>
+          <span class="db-ico">${Shell.ICONS.folder}</span>
+          <span style="font-weight:600;">app_prod</span>
+          <span class="size-badge">14.8 GB</span>
+        </div>
+        <div class="coll-row">
+          <span></span>
+          <span class="coll-ico">${Shell.ICONS.coll}</span>
+          <span class="mono" style="font-size:12px;">users</span>
+          <span class="count-badge">1.4M</span>
+        </div>
+        <div class="coll-row">
+          <span></span>
+          <span class="coll-ico">${Shell.ICONS.coll}</span>
+          <span class="mono" style="font-size:12px;">sessions</span>
+          <span class="count-badge">218K</span>
+        </div>
+        <div class="coll-row is-active">
+          <span></span>
+          <span class="coll-ico">${Shell.ICONS.coll}</span>
+          <span class="mono" style="font-size:12px;">orders</span>
+          <span class="count-badge">4.2M</span>
+        </div>
+        <div class="coll-row" style="background:var(--surface-hover);">
+          <span></span>
+          <span class="coll-ico">${Shell.ICONS.coll}</span>
+          <span class="mono" style="font-size:12px;">invoices</span>
+          <span class="count-badge">912K</span>
+        </div>
+        <div class="coll-row">
+          <span></span>
+          <span class="coll-ico">${Shell.ICONS.coll}</span>
+          <span class="mono" style="font-size:12px;">audit_log</span>
+          <span class="count-badge">38.6M</span>
+        </div>
+        <div class="db-row">
+          <span class="chev">${Shell.ICONS.chev}</span>
+          <span class="db-ico">${Shell.ICONS.folder}</span>
+          <span style="font-weight:600;">analytics</span>
+          <span class="size-badge">46.2 GB</span>
+        </div>
+        <div class="db-row">
+          <span class="chev">${Shell.ICONS.chev}</span>
+          <span class="db-ico">${Shell.ICONS.folder}</span>
+          <span style="font-weight:600;">admin</span>
+          <span class="size-badge">128 KB</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="nav-list" style="margin-top: 14px;">
+      <div class="section-head">Workspace</div>
+      <div class="nav-row">
+        <span></span><span class="nav-ico">${Shell.ICONS.explorer}</span><span>Explorer</span>
+      </div>
+      <div class="nav-row" style="background:var(--surface-hover);">
+        <span></span><span class="nav-ico">${Shell.ICONS.pipeline}</span><span>Aggregations</span>
+      </div>
+      <div class="nav-row is-active">
+        <span></span><span class="nav-ico">${Shell.ICONS.schema}</span><span>Schema</span>
+      </div>
+      <div class="nav-row">
+        <span></span><span class="nav-ico">${Shell.ICONS.investigate}</span><span>Investigate</span>
+        <span class="pill is-danger">2</span>
+      </div>
+      <div class="nav-row">
+        <span></span><span class="nav-ico">${Shell.ICONS.metrics}</span><span>Metrics</span>
+      </div>
+      <div class="nav-row">
+        <span></span><span class="nav-ico">${Shell.ICONS.shell}</span><span>Shell</span>
+      </div>
+      <div class="nav-row">
+        <span></span><span class="nav-ico">${Shell.ICONS.dump}</span><span>Dump / Restore</span>
+      </div>
+      <div class="nav-row">
+        <span></span><span class="nav-ico">${Shell.ICONS.log}</span><span>Query Log</span>
+        <span class="size-badge">12.4k</span>
+      </div>
+    </div>
+  </aside>`;
+}
+
+document.body.insertAdjacentHTML('beforeend', `
+<div class="mac-window">
+  <header class="mac-titlebar">
+    <span class="mac-traffic"><span class="tl-red"></span><span class="tl-yellow"></span><span class="tl-green"></span></span>
+    <span class="mac-title">Compass+ — sidebar close-up</span>
+    <span></span>
+  </header>
+  <div class="mac-body" style="grid-template-columns:380px 1fr;grid-template-rows:1fr;grid-template-areas:'side main';">
+    ${renderSidebarCloseup()}
+    <section class="annotations">
+      <span class="h-eyebrow">component close-up · navigation rail</span>
+      <h2>Sidebar</h2>
+      <p class="lede">The shared navigation rail. 260pt wide in production windows, shown here at 380pt for clarity. Hierarchy comes from tonal lifts and an accent left-edge strip — no 1px borders.</p>
+
+      <div class="spec-grid">
+        <div class="spec-card">
+          <div class="title">Wordmark <span class="ref">22pt brand-mark</span></div>
+          <div class="body">SF Pro Display 14 / 600, <code>letter-spacing: -0.01em</code>. The "+" carries the brand orange. Status dot on the right shows live connection health.</div>
+        </div>
+
+        <div class="spec-card">
+          <div class="title">Connection switcher <span class="ref">card / 6pt</span></div>
+          <div class="body">Elevated card on the recessed sidebar surface. Status dot + name + monospace host, truncated. <code>▾</code> opens the cluster picker.</div>
+        </div>
+
+        <div class="spec-card">
+          <div class="title">Search <span class="ref">well</span></div>
+          <div class="body">Themed input on a recessed surface. <code>⌘K</code> hint, debounced filter over DB and collection names. Resets on Esc.</div>
+        </div>
+
+        <div class="spec-card">
+          <div class="title">DB tree <span class="ref">infinite</span></div>
+          <div class="body">Chevron · folder · DB name · capsule size badge. Collections nest one level: monospace name + doc-count pill. Active collection: accent surface + 3pt accent strip.</div>
+        </div>
+
+        <div class="spec-card">
+          <div class="title">Workspace nav <span class="ref">8 sections</span></div>
+          <div class="body">One row per workspace. Optional trailing pill (notifications, counts). Active = tinted background + accent foreground. Notifications use semantic colour, never decoration.</div>
+        </div>
+
+        <div class="spec-card">
+          <div class="title">Status dot <span class="ref">8px</span></div>
+          <div class="body">Filled circle with a soft halo of the same hue at 18% opacity. Semantic only: <span class="dot is-success"></span> live · <span class="dot is-warning"></span> degraded · <span class="dot is-danger"></span> down.</div>
+        </div>
+      </div>
+
+      <span class="h-eyebrow" style="margin-top:6px;">interaction states</span>
+      <div class="states-grid">
+        <div class="state-row"><span class="lbl">Default</span>
+          <div class="preview-nav is-default">
+            <span class="nav-ico" style="color:var(--muted);">${Shell.ICONS.metrics}</span><span>Metrics</span>
+          </div>
+        </div>
+        <div class="state-row"><span class="lbl">Hover</span>
+          <div class="preview-nav is-hover">
+            <span class="nav-ico" style="color:var(--muted);">${Shell.ICONS.metrics}</span><span>Metrics</span>
+          </div>
+        </div>
+        <div class="state-row"><span class="lbl">Active</span>
+          <div class="preview-nav is-active">
+            <span class="nav-ico" style="color:var(--primary);">${Shell.ICONS.metrics}</span><span>Metrics</span>
+          </div>
+        </div>
+        <div class="state-row"><span class="lbl">Focus</span>
+          <div class="preview-nav is-focus">
+            <span class="nav-ico" style="color:var(--muted);">${Shell.ICONS.metrics}</span><span>Metrics</span>
+          </div>
+        </div>
+        <div class="state-row"><span class="lbl">Disabled</span>
+          <div class="preview-nav is-disabled">
+            <span class="nav-ico" style="color:var(--muted);">${Shell.ICONS.metrics}</span><span>Metrics</span>
+          </div>
+        </div>
+        <div class="state-row"><span class="lbl">Loading</span>
+          <div class="preview-nav loading-pulse">
+            <span class="nav-ico" style="color:var(--muted);">${Shell.ICONS.metrics}</span><span class="muted-2">Reloading…</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+`);
+</script>
+</body>
+</html>

@@ -2,13 +2,13 @@ import SwiftUI
 
 enum NavSection: String, CaseIterable, Identifiable {
     case explorer = "Explorer"
-    case queryLog = "Query Log"
-    case aggregation = "Aggregation"
+    case aggregation = "Aggregations"
+    case schema = "Schema"
     case investigate = "Investigate"
     case metrics = "Metrics"
-    case dumpRestore = "Dump & Restore"
-    case schema = "Schema"
     case shell = "Shell"
+    case dumpRestore = "Dump / Restore"
+    case queryLog = "Query Log"
 
     var id: String { rawValue }
 

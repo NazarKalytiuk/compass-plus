@@ -5,7 +5,13 @@ import AppKit
 //
 // SwiftUI wrapper around NSTextView that provides:
 //  * monospaced text editing
-//  * dark theme matching app palette
+//  * "Leaf & Midnight" dark code surface (Theme.codeBg)
+//  * line-number gutter (Theme.textOnDarkMuted)
+//  * lightweight JSON syntax highlighting:
+//      - strings  → Theme.codeString  (#69ff87)
+//      - keywords → Theme.codeKeyword (#84d7b2) — true/false/null
+//      - numbers  → Theme.warning subdued
+//      - braces / punctuation → Theme.textOnDarkMuted
 //  * automatic completion of MongoDB aggregation operators when the user types `$`
 //
 // The completion catalog is defined in `MongoOperatorCatalog` below. Completion is
@@ -17,6 +23,16 @@ struct MongoJSONEditor: NSViewRepresentable {
     @Binding var text: String
     var isValid: Bool = true
     var isDisabled: Bool = false
+
+    // MARK: Color constants — mirrored from Theme tokens (NSColor side).
+
+    private static let codeBgNS = NSColor(red: 0.0, green: 0.118, blue: 0.169, alpha: 1.0)        // Theme.codeBg
+    private static let accentNS = NSColor(red: 0.0, green: 0.929, blue: 0.392, alpha: 1.0)        // Theme.accent
+    private static let textOnDark = NSColor.white                                                  // Theme.textOnDark
+    private static let textOnDarkMuted = NSColor.white.withAlphaComponent(0.62)                    // Theme.textOnDarkMuted
+    private static let codeString = NSColor(red: 0.412, green: 1.0, blue: 0.529, alpha: 1.0)      // Theme.codeString
+    private static let codeKeyword = NSColor(red: 0.518, green: 0.843, blue: 0.698, alpha: 1.0)   // Theme.codeKeyword
+    private static let codeNumber = NSColor(red: 0.961, green: 0.651, blue: 0.137, alpha: 0.92)   // Theme.warning (subdued)
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
@@ -35,23 +51,30 @@ struct MongoJSONEditor: NSViewRepresentable {
         textView.smartInsertDeleteEnabled = false
         textView.allowsUndo = true
         textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.textContainerInset = NSSize(width: 6, height: 8)
         textView.drawsBackground = true
-        textView.backgroundColor = NSColor(red: 0.0, green: 0.118, blue: 0.169, alpha: 1.0)  // Theme.midnight
-        textView.textColor = .white
-        textView.insertionPointColor = NSColor(red: 0.0, green: 0.929, blue: 0.392, alpha: 1.0)  // Theme.green
+        textView.backgroundColor = Self.codeBgNS
+        textView.textColor = Self.textOnDark
+        textView.insertionPointColor = Self.accentNS
         textView.selectedTextAttributes = [
-            .backgroundColor: NSColor(red: 0.0, green: 0.929, blue: 0.392, alpha: 0.25)
+            .backgroundColor: Self.accentNS.withAlphaComponent(0.25)
         ]
 
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = NSColor(red: 0.0, green: 0.118, blue: 0.169, alpha: 1.0)
+        scrollView.backgroundColor = Self.codeBgNS
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
 
+        // Line-number gutter
+        scrollView.hasVerticalRuler = true
+        scrollView.rulersVisible = true
+        let ruler = LineNumberRulerView(textView: textView)
+        scrollView.verticalRulerView = ruler
+
         textView.string = text
+        Self.applySyntaxHighlight(textView: textView)
         return scrollView
     }
 
@@ -65,28 +88,93 @@ struct MongoJSONEditor: NSViewRepresentable {
             textView.setSelectedRange(NSRange(location: clamped, length: 0))
         }
         textView.isEditable = !isDisabled
-        textView.textColor = isDisabled ? NSColor.white.withAlphaComponent(0.5) : .white
+        textView.textColor = isDisabled
+            ? Self.textOnDark.withAlphaComponent(0.5)
+            : Self.textOnDark
+        Self.applySyntaxHighlight(textView: textView)
+        (scrollView.verticalRulerView as? LineNumberRulerView)?.needsDisplay = true
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
+        Coordinator(text: $text, applyHighlight: { textView in
+            Self.applySyntaxHighlight(textView: textView)
+        })
+    }
+
+    // MARK: - Syntax Highlighting
+
+    fileprivate static func applySyntaxHighlight(textView: NSTextView) {
+        guard let storage = textView.textStorage else { return }
+        let fullText = textView.string as NSString
+        let fullRange = NSRange(location: 0, length: fullText.length)
+        guard fullRange.length > 0 else { return }
+
+        let baseFont = textView.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+        storage.beginEditing()
+        // Reset to default punctuation muted color.
+        storage.setAttributes([
+            .font: baseFont,
+            .foregroundColor: textOnDarkMuted
+        ], range: fullRange)
+
+        // Strings — including keys (the JSON parser doesn't distinguish, both look the same).
+        let stringPattern = "\"(?:\\\\.|[^\"\\\\])*\""
+        if let regex = try? NSRegularExpression(pattern: stringPattern, options: []) {
+            regex.enumerateMatches(in: textView.string, options: [], range: fullRange) { match, _, _ in
+                guard let r = match?.range else { return }
+                storage.addAttribute(.foregroundColor, value: codeString, range: r)
+            }
+        }
+
+        // Numbers (integers, decimals, scientific).
+        let numberPattern = "(?<![\\w.])-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?(?![\\w.])"
+        if let regex = try? NSRegularExpression(pattern: numberPattern, options: []) {
+            regex.enumerateMatches(in: textView.string, options: [], range: fullRange) { match, _, _ in
+                guard let r = match?.range else { return }
+                // Skip if inside a string — the string pass already owns these ranges.
+                let attrs = storage.attributes(at: r.location, effectiveRange: nil)
+                if let color = attrs[.foregroundColor] as? NSColor, color == codeString { return }
+                storage.addAttribute(.foregroundColor, value: codeNumber, range: r)
+            }
+        }
+
+        // Keywords / literals: true / false / null.
+        let keywordPattern = "\\b(?:true|false|null)\\b"
+        if let regex = try? NSRegularExpression(pattern: keywordPattern, options: []) {
+            regex.enumerateMatches(in: textView.string, options: [], range: fullRange) { match, _, _ in
+                guard let r = match?.range else { return }
+                let attrs = storage.attributes(at: r.location, effectiveRange: nil)
+                if let color = attrs[.foregroundColor] as? NSColor, color == codeString { return }
+                storage.addAttribute(.foregroundColor, value: codeKeyword, range: r)
+            }
+        }
+
+        storage.endEditing()
     }
 
     // MARK: - Coordinator
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         @Binding var text: String
+        let applyHighlight: (NSTextView) -> Void
         /// Guards against re-entrant auto-completion while inserting the completion itself.
         private var isCompleting = false
 
-        init(text: Binding<String>) {
+        init(text: Binding<String>, applyHighlight: @escaping (NSTextView) -> Void) {
             self._text = text
+            self.applyHighlight = applyHighlight
         }
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             if text != textView.string {
                 text = textView.string
+            }
+            applyHighlight(textView)
+            if let scrollView = textView.enclosingScrollView,
+               let ruler = scrollView.verticalRulerView as? LineNumberRulerView {
+                ruler.needsDisplay = true
             }
             guard !isCompleting else { return }
             maybeTriggerCompletion(textView: textView)
@@ -179,6 +267,81 @@ struct MongoJSONEditor: NSViewRepresentable {
                 start = prev
             }
             return nil
+        }
+    }
+}
+
+// MARK: - Line Number Ruler
+
+/// Lightweight gutter that draws line numbers in the muted on-dark token.
+final class LineNumberRulerView: NSRulerView {
+    private weak var hostTextView: NSTextView?
+
+    private static let gutterBg = NSColor(red: 0.0, green: 0.118, blue: 0.169, alpha: 1.0)      // Theme.codeBg
+    private static let gutterFg = NSColor.white.withAlphaComponent(0.45)                         // muted on-dark
+
+    init(textView: NSTextView) {
+        self.hostTextView = textView
+        super.init(scrollView: textView.enclosingScrollView, orientation: .verticalRuler)
+        self.clientView = textView
+        self.ruleThickness = 36
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        // Background fill.
+        Self.gutterBg.setFill()
+        rect.fill()
+
+        guard
+            let textView = hostTextView,
+            let layoutManager = textView.layoutManager,
+            let textContainer = textView.textContainer
+        else { return }
+
+        let nsString = textView.string as NSString
+        let visibleRect = textView.visibleRect
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+
+        // Find line number for the first visible character.
+        var lineNumber = 1
+        let preceding = NSRange(location: 0, length: charRange.location)
+        nsString.enumerateSubstrings(in: preceding, options: [.byLines, .substringNotRequired]) { _, _, _, _ in
+            lineNumber += 1
+        }
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: Self.gutterFg
+        ]
+
+        // Walk visible lines and draw their numbers.
+        var index = charRange.location
+        let end = NSMaxRange(charRange)
+        while index < end || (index == 0 && nsString.length == 0) {
+            let lineRange = nsString.lineRange(for: NSRange(location: index, length: 0))
+            let glyphIdx = layoutManager.glyphIndexForCharacter(at: lineRange.location)
+            let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIdx, effectiveRange: nil)
+            let yInRuler = lineRect.minY - visibleRect.minY + textView.textContainerInset.height
+
+            let label = "\(lineNumber)" as NSString
+            let labelSize = label.size(withAttributes: attrs)
+            let drawRect = NSRect(
+                x: ruleThickness - labelSize.width - 8,
+                y: yInRuler + (lineRect.height - labelSize.height) / 2,
+                width: labelSize.width,
+                height: labelSize.height
+            )
+            label.draw(in: drawRect, withAttributes: attrs)
+
+            lineNumber += 1
+            if lineRange.length == 0 { break }
+            index = NSMaxRange(lineRange)
+            if nsString.length == 0 { break }
         }
     }
 }

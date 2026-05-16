@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Investigate</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: 0;
+  }
+  .invest-body {
+    overflow: auto;
+    padding: 14px 16px 18px;
+    background: var(--surface-0);
+    display: flex; flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+  }
+  .invest-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  .invest-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px;
+  }
+  .invest-head .title { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
+  .invest-head .sub { font-size: 12px; color: var(--muted); }
+
+  .tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .tbl th, .tbl td {
+    text-align: left;
+    padding: 8px 12px;
+    vertical-align: middle;
+  }
+  .tbl th {
+    background: var(--surface-2);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted-2);
+    font-weight: 600;
+  }
+  .tbl td { box-shadow: 0 -1px 0 var(--hairline); }
+  .tbl tr:first-child td { box-shadow: none; }
+  .tbl tr:hover td { background: var(--surface-hover); }
+  .tbl .mono { font-family: var(--font-mono); font-size: 12px; }
+  .tbl .ns {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .tbl .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .tbl tr.is-warn td { background: rgba(217, 119, 6, 0.06); }
+  .tbl tr.is-warn:hover td { background: rgba(217, 119, 6, 0.12); }
+  .tbl tr.is-danger td { background: rgba(220, 38, 38, 0.06); }
+  .tbl tr.is-danger:hover td { background: rgba(220, 38, 38, 0.12); }
+  .tbl .duration { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .duration.ok   { color: var(--success); }
+  .duration.warn { color: var(--warning); }
+  .duration.bad  { color: var(--danger); }
+
+  .heart {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .heart::before {
+    content: "●";
+    color: var(--success);
+    animation: pulse 1.4s infinite;
+  }
+
+  .reco-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    padding: 14px 16px 16px;
+  }
+  .reco {
+    background: var(--surface-2);
+    border-radius: var(--r-lg);
+    padding: 14px;
+    display: flex; flex-direction: column;
+    gap: 8px;
+  }
+  .reco .reco-head {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .reco .ns {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .reco-spec {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--fg-soft);
+    background: var(--surface-1);
+    padding: 8px 10px;
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-xs);
+  }
+  .reco-spec .tok-key { color: #1F4D8C; }
+  .reco-spec .tok-num { color: #B45309; }
+
+  .impact {
+    display: grid;
+    grid-template-columns: 90px 1fr 60px;
+    align-items: center; gap: 10px;
+  }
+  .impact .ilbl { font-size: 11px; color: var(--muted-2); font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; }
+  .impact .ibar {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    box-shadow: var(--shadow-inset);
+    overflow: hidden;
+  }
+  .impact .ibar > i {
+    display: block; height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #F2673C 0%, #FFB04A 100%);
+  }
+  .impact .iout {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--success);
+    font-weight: 600;
+    font-size: 12px;
+  }
+  .reco .actions { display: flex; gap: 6px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'investigate', activeColl: null },
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="mono" style="color:var(--muted);">production-cluster</span>
+        <span class="crumb-sep">›</span>
+        <span class="mono" style="color:var(--fg);font-weight:600;">investigate</span>
+      </span>
+      <span class="heart">live · 1.4s ago</span>
+      <span class="toolbar-spacer"></span>
+      <span class="muted" style="font-size:12px;">Refresh</span>
+      <span class="seg">
+        <span class="seg-item">1s</span>
+        <span class="seg-item is-active">2s</span>
+        <span class="seg-item">10s</span>
+        <span class="seg-item">Off</span>
+      </span>
+      <button class="btn">Export report</button>
+    </div>
+
+    <div class="invest-body">
+      <!-- a) Current operations -->
+      <section class="invest-card">
+        <div class="invest-head">
+          <span class="title">Current operations</span>
+          <span class="sub">12 active · 4 with locks held > 100ms</span>
+          <span class="spacer" style="flex:1;"></span>
+          <span class="pill is-warning">2 above SLA</span>
+          <button class="btn">Filter…</button>
+        </div>
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th style="width:14%;">Op</th>
+              <th>Namespace</th>
+              <th style="width:18%;">Client</th>
+              <th style="width:10%;" class="num">Duration</th>
+              <th style="width:10%;" class="num">Locks</th>
+              <th style="width:90px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="is-warn">
+              <td><span class="pill is-warning">getMore</span></td>
+              <td class="ns">app_prod.audit_log</td>
+              <td class="mono">10.4.5.18:54922</td>
+              <td class="num duration warn">4.82s</td>
+              <td class="num mono">R 2 / W 0</td>
+              <td><button class="btn btn-danger" style="padding:0 10px;height:26px;font-size:11.5px;">Kill</button></td>
+            </tr>
+            <tr class="is-danger">
+              <td><span class="pill is-danger">aggregate</span></td>
+              <td class="ns">analytics.events</td>
+              <td class="mono">eu-worker-3.k8s:39811</td>
+              <td class="num duration bad">12.4s</td>
+              <td class="num mono">R 4 / W 0</td>
+              <td><button class="btn btn-danger" style="padding:0 10px;height:26px;font-size:11.5px;">Kill</button></td>
+            </tr>
+            <tr>
+              <td><span class="pill is-info">query</span></td>
+              <td class="ns">app_prod.users</td>
+              <td class="mono">api-gw-7.svc:42088</td>
+              <td class="num duration ok">142ms</td>
+              <td class="num mono">R 1 / W 0</td>
+              <td><button class="btn btn-danger" style="padding:0 10px;height:26px;font-size:11.5px;opacity:0.45;">Kill</button></td>
+            </tr>
+            <tr>
+              <td><span class="pill is-success">insert</span></td>
+              <td class="ns">app_prod.orders</td>
+              <td class="mono">checkout-2.svc:58104</td>
+              <td class="num duration ok">8ms</td>
+              <td class="num mono">R 0 / W 1</td>
+              <td><button class="btn btn-danger" style="padding:0 10px;height:26px;font-size:11.5px;opacity:0.45;">Kill</button></td>
+            </tr>
+            <tr>
+              <td><span class="pill is-violet">command</span></td>
+              <td class="ns">admin.$cmd · serverStatus</td>
+              <td class="mono">compass+ (mac)</td>
+              <td class="num duration ok">2ms</td>
+              <td class="num mono">R 0 / W 0</td>
+              <td><button class="btn btn-danger" style="padding:0 10px;height:26px;font-size:11.5px;opacity:0.45;">Kill</button></td>
+            </tr>
+            <tr class="is-warn">
+              <td><span class="pill is-warning">update</span></td>
+              <td class="ns">app_prod.sessions</td>
+              <td class="mono">api-gw-3.svc:33820</td>
+              <td class="num duration warn">2.10s</td>
+              <td class="num mono">R 0 / W 2</td>
+              <td><button class="btn btn-danger" style="padding:0 10px;height:26px;font-size:11.5px;">Kill</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- b) Slow queries -->
+      <section class="invest-card">
+        <div class="invest-head">
+          <span class="title">Slow queries</span>
+          <span class="sub">last 60 minutes · threshold 100ms</span>
+          <span class="spacer" style="flex:1;"></span>
+          <span class="pill is-mono is-danger">7 endpoints affected</span>
+          <button class="btn">Lower threshold…</button>
+        </div>
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th style="width:34%;">Pattern</th>
+              <th style="width:18%;">Collection</th>
+              <th class="num" style="width:10%;">Mean ms</th>
+              <th class="num" style="width:10%;">P99 ms</th>
+              <th class="num" style="width:10%;">Count</th>
+              <th style="width:12%;">Last seen</th>
+              <th style="width:90px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="is-danger">
+              <td class="mono">find({ "audit_log.actorId": $oid, … })</td>
+              <td class="ns">app_prod.audit_log</td>
+              <td class="num duration bad">2,481</td>
+              <td class="num duration bad">9,820</td>
+              <td class="num">14,082</td>
+              <td class="mono">8s ago</td>
+              <td><button class="btn">Explain</button></td>
+            </tr>
+            <tr class="is-warn">
+              <td class="mono">aggregate · monthly_revenue_by_tier</td>
+              <td class="ns">app_prod.orders</td>
+              <td class="num duration warn">682</td>
+              <td class="num duration warn">1,420</td>
+              <td class="num">412</td>
+              <td class="mono">14s ago</td>
+              <td><button class="btn">Explain</button></td>
+            </tr>
+            <tr class="is-warn">
+              <td class="mono">find({ tier: ?, createdAt: { $gte: ? } })</td>
+              <td class="ns">app_prod.users</td>
+              <td class="num duration warn">412</td>
+              <td class="num duration warn">980</td>
+              <td class="num">9,210</td>
+              <td class="mono">21s ago</td>
+              <td><button class="btn">Explain</button></td>
+            </tr>
+            <tr>
+              <td class="mono">update({ _id: ?, $inc: { count: 1 } })</td>
+              <td class="ns">analytics.events</td>
+              <td class="num duration ok">88</td>
+              <td class="num duration warn">240</td>
+              <td class="num">82,041</td>
+              <td class="mono">1s ago</td>
+              <td><button class="btn">Explain</button></td>
+            </tr>
+            <tr>
+              <td class="mono">find({ status: ?, userId: ? })</td>
+              <td class="ns">app_prod.invoices</td>
+              <td class="num duration ok">42</td>
+              <td class="num duration ok">94</td>
+              <td class="num">3,128</td>
+              <td class="mono">3s ago</td>
+              <td><button class="btn">Explain</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- c) Index recommendations -->
+      <section class="invest-card">
+        <div class="invest-head">
+          <span class="title">Index recommendations</span>
+          <span class="sub">based on the last 24h of query patterns · 4 suggestions</span>
+          <span class="spacer" style="flex:1;"></span>
+          <span class="pill is-success">est. −38% latency</span>
+        </div>
+        <div class="reco-grid">
+
+          <div class="reco">
+            <div class="reco-head">
+              <span class="pill is-danger">high impact</span>
+              <span class="ns">app_prod.audit_log</span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="mono muted-2" style="font-size:11px;">+12 MB on disk</span>
+            </div>
+            <div class="reco-spec">{ <span class="tok-key">"actorId"</span>: <span class="tok-num">1</span>, <span class="tok-key">"createdAt"</span>: <span class="tok-num">-1</span> }</div>
+            <div class="impact">
+              <span class="ilbl">Predicted impact</span>
+              <span class="ibar"><i style="width:92%;"></i></span>
+              <span class="iout">−2.1 s</span>
+            </div>
+            <div style="font-size:11.5px;color:var(--muted);">Will accelerate the <span class="mono">getMore</span> on audit_log dominating current ops.</div>
+            <div class="actions">
+              <button class="btn">Preview</button>
+              <button class="btn">Build in background</button>
+              <button class="btn btn-primary">Create index</button>
+            </div>
+          </div>
+
+          <div class="reco">
+            <div class="reco-head">
+              <span class="pill is-warning">medium impact</span>
+              <span class="ns">app_prod.users</span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="mono muted-2" style="font-size:11px;">+3.4 MB on disk</span>
+            </div>
+            <div class="reco-spec">{ <span class="tok-key">"tier"</span>: <span class="tok-num">1</span>, <span class="tok-key">"createdAt"</span>: <span class="tok-num">-1</span> }</div>
+            <div class="impact">
+              <span class="ilbl">Predicted impact</span>
+              <span class="ibar"><i style="width:64%;"></i></span>
+              <span class="iout">−320 ms</span>
+            </div>
+            <div style="font-size:11.5px;color:var(--muted);">Replaces the <span class="mono">{ tier: 1 }</span> single index — covers it.</div>
+            <div class="actions">
+              <button class="btn">Preview</button>
+              <button class="btn btn-primary">Create index</button>
+            </div>
+          </div>
+
+          <div class="reco">
+            <div class="reco-head">
+              <span class="pill is-warning">medium impact</span>
+              <span class="ns">analytics.events</span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="mono muted-2" style="font-size:11px;">+58 MB · partial filter</span>
+            </div>
+            <div class="reco-spec">{ <span class="tok-key">"_id"</span>: <span class="tok-num">1</span> }, <span class="muted" style="font-size:11.5px;">partial: { count: { $gt: 0 } }</span></div>
+            <div class="impact">
+              <span class="ilbl">Predicted impact</span>
+              <span class="ibar"><i style="width:48%;"></i></span>
+              <span class="iout">−110 ms</span>
+            </div>
+            <div style="font-size:11.5px;color:var(--muted);">Skips the 38M zero-count rows — keeps index tiny.</div>
+            <div class="actions">
+              <button class="btn">Preview</button>
+              <button class="btn btn-primary">Create index</button>
+            </div>
+          </div>
+
+          <div class="reco">
+            <div class="reco-head">
+              <span class="pill">low impact</span>
+              <span class="ns">app_prod.invoices</span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="mono muted-2" style="font-size:11px;">+0.9 MB</span>
+            </div>
+            <div class="reco-spec">{ <span class="tok-key">"status"</span>: <span class="tok-num">1</span>, <span class="tok-key">"userId"</span>: <span class="tok-num">1</span> }</div>
+            <div class="impact">
+              <span class="ilbl">Predicted impact</span>
+              <span class="ibar"><i style="width:22%;"></i></span>
+              <span class="iout">−48 ms</span>
+            </div>
+            <div style="font-size:11.5px;color:var(--muted);">Marginal — defer unless invoice list is hot.</div>
+            <div class="actions">
+              <button class="btn">Preview</button>
+              <button class="btn">Dismiss</button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

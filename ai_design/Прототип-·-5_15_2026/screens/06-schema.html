@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Schema · users</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto auto 1fr;
+    background: var(--surface-0);
+    min-height: 0;
+  }
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    padding: 14px 16px 8px;
+  }
+  .stat-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 14px 16px;
+    display: flex; flex-direction: column;
+    gap: 4px;
+  }
+  .stat-card .lbl {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted-2);
+    font-weight: 600;
+  }
+  .stat-card .val {
+    font-family: var(--font-display);
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-card .meta { font-size: 11.5px; color: var(--muted); }
+  .stat-card .meta .up { color: var(--success); font-weight: 600; }
+  .stat-card .meta .down { color: var(--warning); font-weight: 600; }
+
+  .schema-body {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 14px;
+    padding: 8px 16px 16px;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .fields {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    overflow: auto;
+    min-height: 0;
+  }
+  .fields-head {
+    display: grid;
+    grid-template-columns: 1.5fr 2.2fr 90px 1.5fr;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--surface-2);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted-2);
+    font-weight: 600;
+    position: sticky; top: 0; z-index: 1;
+  }
+  .field-row {
+    display: grid;
+    grid-template-columns: 1.5fr 2.2fr 90px 1.5fr;
+    gap: 12px;
+    padding: 10px 16px;
+    align-items: center;
+    cursor: default;
+  }
+  .field-row + .field-row { box-shadow: 0 -1px 0 var(--hairline); }
+  .field-row:hover { background: var(--surface-hover); }
+  .field-row.is-active { background: var(--surface-active); }
+  .field-row.is-active .name { color: var(--primary-700); font-weight: 700; }
+  .field-row .name {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--fg);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .field-row .name .indent { color: var(--muted-2); }
+  .field-row .types {
+    display: flex;
+    height: 14px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--surface-3);
+    box-shadow: var(--shadow-inset);
+  }
+  .field-row .types > span {
+    height: 100%;
+    transition: filter 0.12s ease;
+  }
+  .t-string  { background: #34A853; }
+  .t-int     { background: #F4B860; }
+  .t-double  { background: #E58FB7; }
+  .t-bool    { background: #6FB7E0; }
+  .t-date    { background: #B98AE8; }
+  .t-objectid{ background: #5B6472; }
+  .t-array   { background: #DC8A48; }
+  .t-object  { background: #1F4D8C; }
+  .t-null    { background: #C8C2B7; }
+  .field-row .sample {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .field-row .sample .v-str { color: #15803D; }
+  .field-row .sample .v-num { color: #B45309; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    padding: 8px 16px;
+    background: var(--surface-2);
+    font-size: 11px;
+  }
+  .legend .swatch { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  .legend .swatch::before {
+    content: ""; width: 10px; height: 10px; border-radius: 2px;
+  }
+  .legend .s-string::before  { background: #34A853; }
+  .legend .s-int::before     { background: #F4B860; }
+  .legend .s-double::before  { background: #E58FB7; }
+  .legend .s-bool::before    { background: #6FB7E0; }
+  .legend .s-date::before    { background: #B98AE8; }
+  .legend .s-objectid::before{ background: #5B6472; }
+  .legend .s-array::before   { background: #DC8A48; }
+  .legend .s-object::before  { background: #1F4D8C; }
+  .legend .s-null::before    { background: #C8C2B7; }
+
+  .dist-panel {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 16px 18px;
+    overflow: auto;
+    min-height: 0;
+  }
+  .dist-head .title {
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .dist-head .field-path {
+    font-family: var(--font-mono);
+    color: var(--primary-700);
+    font-size: 13px;
+  }
+  .dist-section { margin-top: 18px; }
+  .dist-section h4 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted-2);
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+  .histo {
+    display: grid;
+    grid-template-columns: 90px 1fr 60px;
+    gap: 10px;
+    align-items: center;
+    font-size: 12px;
+  }
+  .histo .row { display: contents; }
+  .histo .lbl { font-family: var(--font-mono); color: var(--fg-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .histo .bar {
+    height: 8px; border-radius: 999px;
+    background: var(--surface-3);
+    overflow: hidden;
+    box-shadow: var(--shadow-inset);
+  }
+  .histo .bar > i {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, #F2673C, #F38B3F);
+    border-radius: 999px;
+  }
+  .histo .n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; font-size: 11px; }
+
+  .summary-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .summary-row > div {
+    background: var(--surface-3);
+    border-radius: var(--r-md);
+    padding: 10px 12px;
+  }
+  .summary-row .lbl {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--muted-2); font-weight: 600;
+  }
+  .summary-row .val {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'schema', activeColl: { db: 'app_prod', coll: 'users' } },
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="crumb-db">app_prod</span>
+        <span class="crumb-sep">›</span>
+        <span class="crumb-coll">users</span>
+        <span class="crumb-sep">›</span>
+        <span class="mono" style="color:var(--muted);">schema</span>
+      </span>
+      <span class="pill is-info">sampled · uniform</span>
+      <span class="toolbar-spacer"></span>
+      <span class="muted" style="font-size:12px;">Sample size</span>
+      <span class="seg">
+        <span class="seg-item">1K</span>
+        <span class="seg-item is-active">10K</span>
+        <span class="seg-item">100K</span>
+        <span class="seg-item">All</span>
+      </span>
+      <button class="btn">Export schema</button>
+      <button class="btn btn-primary">Re-sample</button>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-card">
+        <div class="lbl">Sampled docs</div>
+        <div class="val">10,000</div>
+        <div class="meta">from 1.4M total · 0.71% coverage</div>
+      </div>
+      <div class="stat-card">
+        <div class="lbl">Fields detected</div>
+        <div class="val">42</div>
+        <div class="meta"><span class="up">▲ 3</span> new since last sample</div>
+      </div>
+      <div class="stat-card">
+        <div class="lbl">Max depth</div>
+        <div class="val">5</div>
+        <div class="meta">deepest: <span class="mono">profile.address.geo.lat</span></div>
+      </div>
+      <div class="stat-card">
+        <div class="lbl">Sparse fields</div>
+        <div class="val">11.4%</div>
+        <div class="meta"><span class="down">▲ 1.2pp</span> watch <span class="mono">trial.*</span></div>
+      </div>
+    </div>
+
+    <div class="schema-body">
+      <div class="fields">
+        <div class="fields-head">
+          <span>Field</span>
+          <span>Type distribution</span>
+          <span style="text-align:right;">Present</span>
+          <span>Sample value</span>
+        </div>
+        <div class="legend">
+          <span class="swatch s-string">string</span>
+          <span class="swatch s-int">int32</span>
+          <span class="swatch s-double">double</span>
+          <span class="swatch s-bool">bool</span>
+          <span class="swatch s-date">date</span>
+          <span class="swatch s-objectid">objectId</span>
+          <span class="swatch s-array">array</span>
+          <span class="swatch s-object">object</span>
+          <span class="swatch s-null">null</span>
+        </div>
+
+        <div class="field-row">
+          <span class="name">_id</span>
+          <span class="types"><span class="t-objectid" style="width:100%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">100%</span></span>
+          <span class="sample">ObjectId("6624c0f1a3b81e0042c19fd2")</span>
+        </div>
+        <div class="field-row">
+          <span class="name">email</span>
+          <span class="types"><span class="t-string" style="width:100%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">100%</span></span>
+          <span class="sample"><span class="v-str">"helena.mendes@stitch.co"</span></span>
+        </div>
+        <div class="field-row is-active">
+          <span class="name">tier</span>
+          <span class="types"><span class="t-string" style="width:88%;"></span><span class="t-null" style="width:12%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">88%</span></span>
+          <span class="sample"><span class="v-str">"pro"</span> · "team" · "free"</span>
+        </div>
+        <div class="field-row">
+          <span class="name">createdAt</span>
+          <span class="types"><span class="t-date" style="width:100%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">100%</span></span>
+          <span class="sample">2026‑05‑12T08:14:21.004Z</span>
+        </div>
+        <div class="field-row">
+          <span class="name">lastLoginAt</span>
+          <span class="types"><span class="t-date" style="width:94%;"></span><span class="t-null" style="width:6%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">94%</span></span>
+          <span class="sample">2026‑05‑15T11:02:48.220Z</span>
+        </div>
+        <div class="field-row">
+          <span class="name"><span class="indent">└─</span>profile</span>
+          <span class="types"><span class="t-object" style="width:100%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">100%</span></span>
+          <span class="sample">{ 4 fields }</span>
+        </div>
+        <div class="field-row">
+          <span class="name"><span class="indent">&nbsp;&nbsp;&nbsp;└─</span>firstName</span>
+          <span class="types"><span class="t-string" style="width:100%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">100%</span></span>
+          <span class="sample"><span class="v-str">"Helena"</span></span>
+        </div>
+        <div class="field-row">
+          <span class="name"><span class="indent">&nbsp;&nbsp;&nbsp;└─</span>locale</span>
+          <span class="types"><span class="t-string" style="width:93%;"></span><span class="t-null" style="width:7%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">93%</span></span>
+          <span class="sample"><span class="v-str">"pt-BR"</span> · "en-US" · "sv-SE"</span>
+        </div>
+        <div class="field-row">
+          <span class="name">flags</span>
+          <span class="types"><span class="t-array" style="width:74%;"></span><span class="t-null" style="width:26%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-warning">74%</span></span>
+          <span class="sample">["early-access", "team-admin"]</span>
+        </div>
+        <div class="field-row">
+          <span class="name">verified</span>
+          <span class="types"><span class="t-bool" style="width:100%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">100%</span></span>
+          <span class="sample">true · false</span>
+        </div>
+        <div class="field-row">
+          <span class="name">loginCount</span>
+          <span class="types"><span class="t-int" style="width:84%;"></span><span class="t-double" style="width:11%;"></span><span class="t-null" style="width:5%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-warning">95%</span></span>
+          <span class="sample"><span class="v-num">2,148</span> · max 41,920</span>
+        </div>
+        <div class="field-row">
+          <span class="name">trial.endsAt</span>
+          <span class="types"><span class="t-date" style="width:18%;"></span><span class="t-null" style="width:82%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-danger">18%</span></span>
+          <span class="sample">sparse · trialing users only</span>
+        </div>
+        <div class="field-row">
+          <span class="name">_v</span>
+          <span class="types"><span class="t-int" style="width:100%;"></span></span>
+          <span style="text-align:right;"><span class="pill is-success">100%</span></span>
+          <span class="sample"><span class="v-num">7</span></span>
+        </div>
+      </div>
+
+      <aside class="dist-panel">
+        <div class="dist-head">
+          <div class="title">Distribution</div>
+          <div class="field-path">users.tier</div>
+        </div>
+
+        <div class="summary-row">
+          <div>
+            <div class="lbl">Cardinality</div>
+            <div class="val">3 + null</div>
+          </div>
+          <div>
+            <div class="lbl">Index</div>
+            <div class="val" style="color:var(--success);">btree · used</div>
+          </div>
+        </div>
+
+        <div class="dist-section">
+          <h4>Value frequencies</h4>
+          <div class="histo">
+            <span class="lbl">"free"</span><span class="bar"><i style="width:54%;"></i></span><span class="n">5,402</span>
+            <span class="lbl">"pro"</span><span class="bar"><i style="width:32%;"></i></span><span class="n">3,184</span>
+            <span class="lbl">"team"</span><span class="bar"><i style="width:14%;"></i></span><span class="n">1,414</span>
+            <span class="lbl">null</span><span class="bar"><i style="width:1%;background:linear-gradient(90deg,#C8C2B7,#A8A29C);"></i></span><span class="n">98</span>
+          </div>
+        </div>
+
+        <div class="dist-section">
+          <h4>Cohort by signup year</h4>
+          <div class="histo">
+            <span class="lbl">2024</span><span class="bar"><i style="width:62%;"></i></span><span class="n">6,201</span>
+            <span class="lbl">2025</span><span class="bar"><i style="width:78%;"></i></span><span class="n">7,820</span>
+            <span class="lbl">2026 YTD</span><span class="bar"><i style="width:18%;"></i></span><span class="n">1,773</span>
+          </div>
+        </div>
+
+        <div class="dist-section">
+          <h4>Notes</h4>
+          <div style="font-size:12px;color:var(--muted);line-height:1.55;">
+            12% of documents are missing this field — most predate validator <span class="mono">v1.4</span> (Aug 2024).
+            <span style="color:var(--primary-700);font-weight:600;">Suggest a $set backfill</span> to <span class="mono">"free"</span>.
+          </div>
+        </div>
+      </aside>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

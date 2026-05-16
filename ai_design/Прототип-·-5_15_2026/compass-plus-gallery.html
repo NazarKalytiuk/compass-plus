@@ -1,0 +1,103 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Screen Gallery</title>
+<link rel="stylesheet" href="assets/styles.css">
+<style>
+  body {
+    background:
+      radial-gradient(1400px 700px at 50% -10%, #FFEEE3 0%, transparent 60%),
+      var(--canvas);
+    min-height: 100vh;
+  }
+  .gallery { max-width: 1600px; margin: 0 auto; padding: 48px 36px 80px; }
+  .gallery-header { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; margin-bottom: 28px; }
+  .gallery-header .brand-mark { width: 44px; height: 44px; border-radius: 11px; }
+  .gallery-header .brand-word { font-family: var(--font-display); font-size: 28px; font-weight: 600; letter-spacing: -0.018em; }
+  .gallery-header .brand-word .brand-plus { color: var(--primary); }
+  .gallery-header .lede { color: var(--muted); font-size: 14px; line-height: 1.55; max-width: 720px; margin: 6px 0 0; }
+  .gallery-toc { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; padding: 14px 16px; background: var(--surface-1); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); align-items: center; }
+  .gallery-toc .h { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted-2); font-weight: 600; margin-right: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px 22px; }
+  .tile { display: flex; flex-direction: column; text-decoration: none; color: inherit; }
+  .tile-thumb { position: relative; width: 100%; aspect-ratio: 1440 / 900; overflow: hidden; border-radius: 14px; box-shadow: var(--shadow-md); background: var(--surface-1); transition: transform 0.18s ease, box-shadow 0.18s ease; }
+  .tile:hover .tile-thumb { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+  .tile-thumb iframe { border: 0; width: 1480px; height: 940px; transform: scale(0.345); transform-origin: 0 0; pointer-events: none; user-select: none; }
+  .tile-overlay { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(17,24,39,0) 50%, rgba(17,24,39,0.04) 100%); pointer-events: none; }
+  .tile-meta { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 12px 4px 0; }
+  .tile-num { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--primary-700); background: var(--primary-50); padding: 3px 8px; border-radius: 999px; }
+  .tile-title { font-family: var(--font-display); font-size: 14px; font-weight: 600; letter-spacing: -0.01em; margin: 0; line-height: 1.2; }
+  .tile-section { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
+  .tile-caption { color: var(--muted); font-size: 12.5px; line-height: 1.5; padding: 6px 4px 0; }
+  .tile-state { display: inline-block; margin-left: 6px; font-size: 10.5px; background: var(--surface-3); color: var(--muted); padding: 1px 6px; border-radius: 999px; font-family: var(--font-mono); font-weight: 500; }
+  .tile-state.is-warning { background: #FEF3C7; color: #B45309; }
+  .tile-state.is-danger  { background: #FEE2E2; color: #B91C1C; }
+  .tile-state.is-success { background: #DCFCE7; color: #15803D; }
+  .tile-state.is-accent  { background: var(--primary-50); color: var(--primary-700); }
+  .open-link { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted-2); }
+  .tile:hover .open-link { color: var(--primary-700); }
+  .gallery-footer { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--hairline); display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; color: var(--muted); font-size: 12px; }
+  .gallery-footer .h { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; color: var(--muted-2); margin-bottom: 6px; }
+  .gallery-footer code { font-family: var(--font-mono); background: var(--surface-1); padding: 1px 5px; border-radius: 3px; color: var(--fg-soft); font-size: 11px; }
+  .swatches { display: flex; gap: 6px; margin-top: 6px; }
+  .swatch { width: 22px; height: 22px; border-radius: 6px; box-shadow: var(--shadow-xs); }
+</style>
+</head>
+<body>
+  <main class="gallery">
+    <header class="gallery-header">
+      <span class="brand-mark"></span>
+      <div>
+        <div class="brand-word">Compass<span class="brand-plus">+</span></div>
+        <p class="lede">Native macOS MongoDB GUI client — full design pass at 1440×900. Each tile below is a working screen rendered inside its real macOS window chrome. Click to open at full size.</p>
+      </div>
+    </header>
+    <nav class="gallery-toc">
+      <span class="h">Sections</span>
+      <span class="pill is-mono">Connect</span><span class="pill is-mono">Explorer</span><span class="pill is-mono">Aggregations</span><span class="pill is-mono">Schema</span><span class="pill is-mono">Investigate</span><span class="pill is-mono">Metrics</span><span class="pill is-mono">Shell</span><span class="pill is-mono">Dump / Restore</span><span class="pill is-mono">Query Log</span><span class="pill is-mono">System</span>
+      <span class="spacer" style="flex:1;"></span>
+      <span class="h">Tokens</span>
+      <span class="pill is-mono is-accent">Flat · #F2673C</span>
+    </nav>
+    <div class="grid" id="grid"></div>
+    <footer class="gallery-footer">
+      <div><div class="h">Design tokens</div>Surfaces layered by lightness (<code>--surface-0</code> → <code>--surface-3</code>) instead of hairline borders. Ambient shadows for elevation, recessed wells for inputs, dark code surface for JSON / mongosh / log details.<div class="swatches"><span class="swatch" style="background:var(--primary);"></span><span class="swatch" style="background:var(--success);"></span><span class="swatch" style="background:var(--warning);"></span><span class="swatch" style="background:var(--danger);"></span><span class="swatch" style="background:var(--info);"></span><span class="swatch" style="background:#6D28D9;"></span><span class="swatch" style="background:#1B1F27;"></span></div></div>
+      <div><div class="h">Typography</div>UI: <code>SF Pro</code> · 13 / 11 / 10 uppercase tracking.<br>Mono: <code>SF Mono / JetBrains Mono</code> for queries, URIs, BSON, IDs.<br>Pill badges 10pt semibold tracking 0.7.</div>
+      <div><div class="h">Native macOS</div>Traffic lights · NSToolbar-like proportions · system font stack.<br>Window: 1440 × 900 (min 1280 × 800). Bottom status bar carries server version, latency badge, ops/sec readout.</div>
+    </footer>
+  </main>
+<script>
+const screens = [
+  { n: '01', file: 'screens/01-connect.html',         title: 'Connect',                section: 'Connect',           state: 'default',    stateKind: 'accent',  caption: 'Pre-connection: centered card with URI input, save toggle, recent connections, Connect CTA.' },
+  { n: '02', file: 'screens/02-connect-error.html',   title: 'Connect — error',        section: 'Connect',           state: 'error',      stateKind: 'danger',  caption: 'Auth failed: danger pill on the URI, error line with cause, diagnostic chips, Retry as primary.' },
+  { n: '03', file: 'screens/03-explorer.html',        title: 'Explorer — documents',   section: 'Explorer',          state: 'hover · loading', stateKind: '',   caption: 'BSON cards under a single recessed filter / sort / projection well. Hover lift and loading pulse on display.' },
+  { n: '04', file: 'screens/04-document-editor.html', title: 'Insert document',        section: 'Explorer',          state: 'lint',       stateKind: 'warning', caption: 'Recessed dark JSON well dominates; right-side lint panel surfaces schema warnings as semantic pills.' },
+  { n: '05', file: 'screens/05-aggregation.html',     title: 'Aggregation pipeline',   section: 'Aggregations',      state: 'draft',      stateKind: 'accent',  caption: 'Stacked stage cards with mini code editors and live preview · drag, collapse, delete · "+ Add stage" popover.' },
+  { n: '06', file: 'screens/06-schema.html',          title: 'Schema analyzer',        section: 'Schema',            state: 'active row', stateKind: 'success', caption: 'Stat hero · field tree with stacked BSON-type bars · selected field distribution and notes on the right.' },
+  { n: '07', file: 'screens/07-investigate.html',     title: 'Investigate — DBA',      section: 'Investigate',       state: 'live',       stateKind: 'danger',  caption: 'Current ops with Kill · slow queries with warning tint above 100ms · ranked index recommendations.' },
+  { n: '08', file: 'screens/08-metrics.html',         title: 'Metrics',                section: 'Metrics',           state: 'streaming',  stateKind: 'success', caption: 'Five KPI sparklines · three time-series with soft gradient area fills sharing a 5-minute window.' },
+  { n: '09', file: 'screens/09-dump-restore.html',    title: 'Dump / Restore',         section: 'Dump / Restore',    state: 'running 73%', stateKind: 'accent', caption: 'Side-by-side Dump and Restore cards with pickers, toggles, parallel slider — live recessed log console below.' },
+  { n: '10', file: 'screens/10-shell.html',           title: 'Shell · mongosh',        section: 'Shell',             state: 'caret',      stateKind: '',        caption: 'Full-height dark terminal · syntax-coloured input, blinking caret, saved commands with category pills.' },
+  { n: '11', file: 'screens/11-query-log.html',       title: 'Query log',              section: 'Query Log',         state: 'expanded',   stateKind: 'warning', caption: 'Left filter rail · virtualized log cards with op-type pills and speed-coded duration · one entry expanded.' },
+  { n: '12', file: 'screens/12-sidebar.html',         title: 'Sidebar close-up',       section: 'System',            state: 'states',     stateKind: 'success', caption: 'Standalone navigation rail with size badges, count pills, accent left-edge strip, and six interaction states.' },
+];
+const grid = document.getElementById('grid');
+grid.innerHTML = screens.map(s => `
+  <a class="tile" href="${s.file}" target="_blank" rel="noopener">
+    <div class="tile-thumb">
+      <iframe src="${s.file}" loading="lazy" scrolling="no" aria-hidden="true"></iframe>
+      <div class="tile-overlay"></div>
+    </div>
+    <div class="tile-meta">
+      <span class="tile-num">${s.n}</span>
+      <h3 class="tile-title">${s.title}<span class="tile-state ${s.stateKind ? 'is-' + s.stateKind : ''}">${s.state}</span></h3>
+      <span class="tile-section">${s.section}</span>
+    </div>
+    <p class="tile-caption">${s.caption} <span class="open-link">↗ open</span></p>
+  </a>
+`).join('');
+</script>
+</body>
+</html>

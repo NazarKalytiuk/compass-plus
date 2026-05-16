@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — mongosh</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    background: var(--surface-0);
+    min-height: 0;
+  }
+  .shell-body {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 12px;
+    padding: 12px 16px 14px;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .term-wrap {
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .term {
+    flex: 1;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border-radius: var(--r-lg);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    padding: 16px 18px;
+    box-shadow: inset 0 4px 12px rgba(0,0,0,0.3);
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .term-line .prompt { color: var(--code-prompt); font-weight: 600; }
+  .term-line .ns { color: #6FB7E0; }
+  .term-line.dim { color: var(--code-muted); }
+  .term-line .cmd-key { color: var(--code-keyword); }
+  .term-line .cmd-fn { color: var(--code-key); }
+  .term-line .cmd-num { color: var(--code-number); }
+  .term-line .cmd-str { color: var(--code-string); }
+  .term-line .cmd-bool { color: var(--code-bool); }
+  .term-out { color: var(--code-fg); }
+  .term-out .k { color: var(--code-key); }
+  .term-out .s { color: var(--code-string); }
+  .term-out .n { color: var(--code-number); }
+  .term-out .b { color: var(--code-bool); }
+  .term-out .o { color: var(--code-muted); }
+  .term-out .kw { color: var(--code-keyword); }
+
+  .caret {
+    display: inline-block;
+    width: 8px; height: 14px;
+    background: var(--code-prompt);
+    vertical-align: text-bottom;
+    margin-left: 2px;
+  }
+
+  .term-input {
+    margin-top: 8px;
+    background: var(--code-bg-2);
+    border-radius: var(--r-md);
+    padding: 10px 12px;
+    color: var(--code-fg);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .term-input .p { color: var(--code-prompt); font-weight: 600; }
+  .term-input pre {
+    margin: 0;
+    color: var(--code-fg);
+    white-space: pre-wrap;
+    line-height: 1.6;
+  }
+  .term-input .term-actions { display: flex; gap: 4px; }
+  .term-input .icon-btn { color: rgba(255,255,255,0.6); }
+  .term-input .icon-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  .term-input .btn-primary { padding: 0 14px; height: 28px; }
+
+  .saved {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 14px 14px 12px;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .saved-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .saved-head .title { font-family: var(--font-display); font-size: 13px; font-weight: 600; }
+  .saved-cats {
+    display: flex; gap: 4px; flex-wrap: wrap;
+    margin: 8px 0 10px;
+  }
+  .saved-cats .pill { cursor: default; }
+  .saved-list { overflow: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
+  .saved-item {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--r-md);
+    cursor: default;
+  }
+  .saved-item:hover { background: var(--surface-hover); }
+  .saved-item .name { font-size: 12.5px; font-weight: 600; }
+  .saved-item .body {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+  }
+  .saved-item .meta {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--muted-2);
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'shell', activeColl: { db: 'app_prod', coll: 'users' } },
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="crumb-db">app_prod</span>
+        <span class="crumb-sep">›</span>
+        <span class="mono" style="color:var(--fg);font-weight:600;">shell</span>
+        <span class="mono" style="color:var(--muted-2);">· mongosh 2.2.3</span>
+      </span>
+      <span class="pill is-info">node v20.11.1</span>
+      <span class="toolbar-spacer"></span>
+      <button class="btn">Clear</button>
+      <button class="btn">Copy session</button>
+      <button class="btn btn-primary">＋ Save command</button>
+    </div>
+
+    <div class="shell-body">
+
+      <div class="term-wrap">
+        <div class="term">
+<span class="term-line dim">Current Mongosh Log ID:  6624c0f1a3b81e0042c19fda</span>
+<span class="term-line dim">Connecting to: mongodb+srv://production-cluster · MongoDB 7.0.5</span>
+<span class="term-line dim">Using DB: app_prod  ·  RP: primary  ·  Causal consistency: enabled</span>
+
+<span class="term-line"><span class="prompt">app_prod ></span> <span class="cmd-fn">db.users.findOne</span>({ <span class="cmd-key">email</span>: <span class="cmd-str">"helena.mendes@stitch.co"</span> })</span>
+<span class="term-out">{
+  <span class="k">_id</span>: <span class="kw">ObjectId</span>(<span class="s">"6624c0f1a3b81e0042c19fd2"</span>),
+  <span class="k">email</span>: <span class="s">"helena.mendes@stitch.co"</span>,
+  <span class="k">tier</span>: <span class="s">"pro"</span>,
+  <span class="k">verified</span>: <span class="b">true</span>,
+  <span class="k">loginCount</span>: <span class="n">2148</span>,
+  <span class="k">createdAt</span>: <span class="kw">ISODate</span>(<span class="s">"2026-05-12T08:14:21.004Z"</span>),
+  <span class="k">profile</span>: { <span class="k">firstName</span>: <span class="s">"Helena"</span>, <span class="k">locale</span>: <span class="s">"pt-BR"</span> }
+}</span>
+
+<span class="term-line"><span class="prompt">app_prod ></span> <span class="cmd-fn">db.orders.aggregate</span>([
+  { <span class="cmd-key">$match</span>: { <span class="cmd-key">status</span>: <span class="cmd-str">"completed"</span>, <span class="cmd-key">createdAt</span>: { <span class="cmd-key">$gte</span>: <span class="cmd-key">ISODate</span>(<span class="cmd-str">"2026-04-01"</span>) } } },
+  { <span class="cmd-key">$group</span>: { <span class="cmd-key">_id</span>: <span class="cmd-str">"$tier"</span>, <span class="cmd-key">revenue</span>: { <span class="cmd-key">$sum</span>: <span class="cmd-str">"$total"</span> } } }
+])</span>
+<span class="term-out">[
+  { <span class="k">_id</span>: <span class="s">"pro"</span>,  <span class="k">revenue</span>: <span class="n">1284902.40</span> },
+  { <span class="k">_id</span>: <span class="s">"team"</span>, <span class="k">revenue</span>: <span class="n">412556.10</span>  },
+  { <span class="k">_id</span>: <span class="s">"free"</span>, <span class="k">revenue</span>: <span class="n">28094.55</span>   }
+]</span>
+<span class="term-line dim">→ 3 results in 214 ms · cursor exhausted</span>
+
+<span class="term-line"><span class="prompt">app_prod ></span> <span class="cmd-fn">db.users.createIndex</span>({ <span class="cmd-key">tier</span>: <span class="cmd-num">1</span>, <span class="cmd-key">createdAt</span>: -<span class="cmd-num">1</span> }, { <span class="cmd-key">background</span>: <span class="cmd-bool">true</span> })</span>
+<span class="term-out">{ <span class="k">numIndexesBefore</span>: <span class="n">7</span>, <span class="k">numIndexesAfter</span>: <span class="n">8</span>, <span class="k">createdCollectionAutomatically</span>: <span class="b">false</span>, <span class="k">ok</span>: <span class="n">1</span> }</span>
+
+<span class="term-line dim">use admin</span>
+<span class="term-line"><span class="prompt">admin ></span> <span class="cmd-fn">db.runCommand</span>({ <span class="cmd-key">serverStatus</span>: <span class="cmd-num">1</span>, <span class="cmd-key">repl</span>: <span class="cmd-num">1</span> })<span class="cmd-num">.repl.lag</span></span>
+<span class="term-out"><span class="n">48</span> <span class="o">// ms</span></span>
+
+<span class="term-line"><span class="prompt">admin ></span> <span class="caret"></span></span>
+        </div>
+
+        <div class="term-input">
+          <span class="p">›</span>
+          <pre><span class="cmd-fn">db.users.updateMany</span>(
+  { <span class="cmd-key">tier</span>: <span class="cmd-str">null</span> },
+  { $set: { <span class="cmd-key">tier</span>: <span class="cmd-str">"free"</span> } }
+)<span class="caret"></span></pre>
+          <div class="term-actions">
+            <button class="icon-btn" title="History">↑</button>
+            <button class="icon-btn" title="Format">⤬</button>
+            <button class="icon-btn" title="Help">?</button>
+            <button class="btn btn-primary">Run ⌘↵</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Saved commands -->
+      <aside class="saved">
+        <div class="saved-head">
+          <span class="title">Saved commands</span>
+          <span class="muted-2" style="font-size:11.5px;">28</span>
+          <span class="spacer" style="flex:1;"></span>
+          <button class="icon-btn" title="New folder">＋</button>
+        </div>
+        <div class="search-field" style="background:var(--surface-3);">
+          <span class="ic">${Shell.ICONS.search}</span>
+          <input placeholder="Filter saved…">
+        </div>
+        <div class="saved-cats">
+          <span class="pill is-accent">All · 28</span>
+          <span class="pill">Investigate · 7</span>
+          <span class="pill is-info">Schema · 5</span>
+          <span class="pill is-success">Backfill · 8</span>
+          <span class="pill is-warning">Admin · 6</span>
+          <span class="pill is-violet">Mine · 2</span>
+        </div>
+
+        <div class="saved-list">
+          <div class="saved-item">
+            <div>
+              <div class="name">Find pro users (current month)</div>
+              <div class="body">db.users.find({ tier: "pro", createdAt: { $gte: … } })</div>
+            </div>
+            <div class="meta">⌘1</div>
+          </div>
+          <div class="saved-item" style="background:var(--surface-hover);">
+            <div>
+              <div class="name">Backfill null tier → free</div>
+              <div class="body">db.users.updateMany({ tier: null }, { $set: { tier: "free" } })</div>
+            </div>
+            <div class="meta">⌘2</div>
+          </div>
+          <div class="saved-item">
+            <div>
+              <div class="name">Replication lag (ms)</div>
+              <div class="body">db.runCommand({ serverStatus:1, repl:1 }).repl.lag</div>
+            </div>
+            <div class="meta">⌘3</div>
+          </div>
+          <div class="saved-item">
+            <div>
+              <div class="name">Top slow ops (60s)</div>
+              <div class="body">db.currentOp({ secs_running: { $gt: 0.1 } }).inprog.length</div>
+            </div>
+            <div class="meta">⌘4</div>
+          </div>
+          <div class="saved-item">
+            <div>
+              <div class="name">Compact audit_log</div>
+              <div class="body">db.runCommand({ compact: "audit_log", force: true })</div>
+            </div>
+            <div class="meta">⌘5</div>
+          </div>
+          <div class="saved-item">
+            <div>
+              <div class="name">Monthly revenue by tier</div>
+              <div class="body">db.orders.aggregate([{ $match: … }, { $group: … }])</div>
+            </div>
+            <div class="meta">⌘6</div>
+          </div>
+          <div class="saved-item">
+            <div>
+              <div class="name">Reindex users</div>
+              <div class="body">db.users.reIndex()</div>
+            </div>
+            <div class="meta">⌘7</div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

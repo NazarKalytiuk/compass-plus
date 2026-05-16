@@ -23,6 +23,9 @@ class AppViewModel {
     var savedConnections: [ConnectionModel] = []
     var isConnecting = false
     var connectionError: String?
+    /// Captured DNS/TLS/Auth phases from the most recent failed connect.
+    /// Cleared on a successful connection.
+    var lastDiagnostics: ConnectionDiagnostics?
 
     // MARK: - Navigation & Database Tree
 
@@ -50,6 +53,7 @@ class AppViewModel {
 
     var queryLog: [QueryLogEntry] = []
     var savedQueries: [SavedQuery] = []
+    var savedCommands: [SavedCommand] = []
 
     // MARK: - Aggregation (for current tab)
 
@@ -80,8 +84,20 @@ class AppViewModel {
 
     var slowQueries: [SlowQueryEntry] = []
     var indexes: [[String: Any]] = []
+    var indexRecommendations: [IndexRecommendation] = []
+    /// Set of `IndexRecommendation.id`s the user has dismissed. Survives
+    /// for the lifetime of the connection so dismissed items don't
+    /// re-appear after a re-analyse.
+    private var dismissedRecommendationKeys: Set<String> = []
+    var isComputingRecommendations: Bool = false
     var profilingLevel: Int = 0
     var slowMs: Int = 100
+
+    /// Sidebar Investigate nav-row badge count: slow queries + currently
+    /// running ops that have exceeded 1 second.
+    var investigateBadgeCount: Int {
+        slowQueries.count + currentOps.filter { $0.executionTimeMs > 1000 }.count
+    }
 
     // MARK: - Schema
 
@@ -97,7 +113,7 @@ class AppViewModel {
 
     // MARK: - Connection
 
-    func connect(uri: String, name: String) async {
+    func connect(uri: String, name: String, save: Bool = true) async {
         isConnecting = true
         connectionError = nil
         error = nil
@@ -107,17 +123,24 @@ class AppViewModel {
             isConnected = true
             connectionName = name
             connectionURI = uri
+            lastDiagnostics = nil
 
-            // Save to recent connections
-            let connection = ConnectionModel(name: name, uri: uri, lastUsed: Date())
-            storageService.addConnection(connection)
-            savedConnections = storageService.loadConnections()
+            // Recents are gated by the Save-connection toggle so one-off
+            // probes don't pollute history.
+            if save {
+                let connection = ConnectionModel(name: name, uri: uri, lastUsed: Date())
+                storageService.addConnection(connection)
+                savedConnections = storageService.loadConnections()
+            }
 
             await loadDatabases()
         } catch {
             connectionError = error.localizedDescription
             self.error = error.localizedDescription
             isConnected = false
+            // Run a diagnose pass so ConnectView's failure card can show
+            // which phase actually broke. Best-effort; never re-throws.
+            lastDiagnostics = await mongoService.diagnose(uri: uri)
         }
 
         isConnecting = false
@@ -142,6 +165,9 @@ class AppViewModel {
         currentOps = []
         slowQueries = []
         indexes = []
+        indexRecommendations = []
+        dismissedRecommendationKeys = []
+        isComputingRecommendations = false
         schemaFields = []
         aggregationResults = []
         aggregationError = nil
@@ -157,6 +183,7 @@ class AppViewModel {
         queryLog = storageService.loadQueryLog()
         savedQueries = storageService.loadSavedQueries()
         savedPipelines = storageService.loadSavedPipelines()
+        savedCommands = storageService.loadSavedCommands()
     }
 
     // MARK: - Database / Collection Navigation
@@ -303,23 +330,68 @@ class AppViewModel {
 
             let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
 
-            // Log the query
+            // Best-effort explain so slow queries surface plan + docsExamined
+            // in the log. Falls back silently if explain isn't permitted on
+            // this connection or the server omits executionStats.
+            var plan: String?
+            var examined: Int?
+            if let explain = try? await mongoService.explainFind(
+                database: database, collection: collection, filter: filterStr
+            ) {
+                plan = Self.extractWinningStage(from: explain)
+                examined = Self.extractExamined(from: explain)
+            }
+
             let logEntry = QueryLogEntry(
                 operationType: .find,
                 database: database,
                 collection: collection,
                 query: filterStr ?? "{}",
                 executionTimeMs: executionTimeMs,
-                docsReturned: results.count
+                docsReturned: results.count,
+                docsExamined: examined,
+                plan: plan,
+                client: "compass+"
             )
             logQuery(logEntry)
         } catch {
             self.error = error.localizedDescription
             documents = []
             documentCount = 0
+            let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
+            let filterStr = activeTab.filter.isEmpty ? "{}" : activeTab.filter
+            let logEntry = QueryLogEntry(
+                operationType: .find,
+                database: database,
+                collection: collection,
+                query: filterStr,
+                executionTimeMs: executionTimeMs,
+                docsReturned: 0,
+                client: "compass+",
+                errorMessage: error.localizedDescription
+            )
+            logQuery(logEntry)
         }
 
         isLoading = false
+    }
+
+    /// Walk the `queryPlanner.winningPlan` tree and return the outermost
+    /// stage name (e.g. "IXSCAN", "COLLSCAN", "FETCH").
+    private static func extractWinningStage(from explain: [String: Any]) -> String? {
+        guard let qp = explain["queryPlanner"] as? [String: Any],
+              let wp = qp["winningPlan"] as? [String: Any] else { return nil }
+        if let stage = wp["stage"] as? String { return stage }
+        return nil
+    }
+
+    /// Read totalDocsExamined out of `executionStats`. Absent on default
+    /// verbosity (queryPlanner-only) — returns nil in that case.
+    private static func extractExamined(from explain: [String: Any]) -> Int? {
+        guard let es = explain["executionStats"] as? [String: Any] else { return nil }
+        if let n = es["totalDocsExamined"] as? Int { return n }
+        if let n = es["totalKeysExamined"] as? Int { return n }
+        return nil
     }
 
     func insertDocument(_ json: String) async {
@@ -345,7 +417,8 @@ class AppViewModel {
                 collection: collection,
                 query: json,
                 executionTimeMs: executionTimeMs,
-                docsReturned: 1
+                docsReturned: 1,
+                client: "compass+"
             )
             logQuery(logEntry)
 
@@ -353,6 +426,17 @@ class AppViewModel {
             await refreshDocuments()
         } catch {
             self.error = error.localizedDescription
+            let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
+            logQuery(QueryLogEntry(
+                operationType: .insert,
+                database: database,
+                collection: collection,
+                query: json,
+                executionTimeMs: executionTimeMs,
+                docsReturned: 0,
+                client: "compass+",
+                errorMessage: error.localizedDescription
+            ))
         }
     }
 
@@ -381,13 +465,26 @@ class AppViewModel {
                 collection: collection,
                 query: "filter: \(filterJSON), update: \(json)",
                 executionTimeMs: executionTimeMs,
-                docsReturned: 0
+                docsReturned: 0,
+                client: "compass+"
             )
             logQuery(logEntry)
 
             await refreshDocuments()
         } catch {
             self.error = error.localizedDescription
+            let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
+            let filterJSON = "{\"_id\": \"\(id)\"}"
+            logQuery(QueryLogEntry(
+                operationType: .update,
+                database: database,
+                collection: collection,
+                query: "filter: \(filterJSON), update: \(json)",
+                executionTimeMs: executionTimeMs,
+                docsReturned: 0,
+                client: "compass+",
+                errorMessage: error.localizedDescription
+            ))
         }
     }
 
@@ -415,13 +512,26 @@ class AppViewModel {
                 collection: collection,
                 query: filterJSON,
                 executionTimeMs: executionTimeMs,
-                docsReturned: 0
+                docsReturned: 0,
+                client: "compass+"
             )
             logQuery(logEntry)
 
             await refreshDocuments()
         } catch {
             self.error = error.localizedDescription
+            let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
+            let filterJSON = "{\"_id\": \"\(id)\"}"
+            logQuery(QueryLogEntry(
+                operationType: .delete,
+                database: database,
+                collection: collection,
+                query: filterJSON,
+                executionTimeMs: executionTimeMs,
+                docsReturned: 0,
+                client: "compass+",
+                errorMessage: error.localizedDescription
+            ))
         }
     }
 
@@ -555,6 +665,56 @@ class AppViewModel {
         storageService.removeQuery(id: id)
     }
 
+    // MARK: - Saved Shell Commands
+
+    /// Persist a mongosh expression for quick recall in the Shell view.
+    /// Trims whitespace; ignores empty payloads.
+    func saveShellCommand(name: String, command: String, category: String = "Custom") {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCommand.isEmpty else { return }
+        let resolvedName = trimmedName.isEmpty ? Self.defaultCommandName(for: trimmedCommand) : trimmedName
+        let resolvedCategory = category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Custom"
+            : category.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let entry = SavedCommand(
+            name: resolvedName,
+            command: trimmedCommand,
+            category: resolvedCategory
+        )
+        savedCommands.insert(entry, at: 0)
+        storageService.saveCommand(entry)
+    }
+
+    func removeSavedCommand(id: UUID) {
+        savedCommands.removeAll { $0.id == id }
+        storageService.removeCommand(id: id)
+    }
+
+    /// Mark a saved command as used. Updates `lastUsedAt` and re-sorts
+    /// it to the top so the drawer feels recency-ordered.
+    func markCommandUsed(id: UUID) {
+        guard let index = savedCommands.firstIndex(where: { $0.id == id }) else { return }
+        savedCommands[index].lastUsedAt = Date()
+        let updated = savedCommands.remove(at: index)
+        savedCommands.insert(updated, at: 0)
+        storageService.updateCommandLastUsed(id: id)
+    }
+
+    /// Best-effort short label derived from the command body when the
+    /// user doesn't supply a name.
+    private static func defaultCommandName(for command: String) -> String {
+        // Take the first non-empty line, strip leading prefixes, cap at 32 chars.
+        let firstLine = command
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map(String.init) ?? command
+        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        if trimmed.count <= 32 { return trimmed }
+        return String(trimmed.prefix(31)) + "…"
+    }
+
     func loadQuery(_ query: SavedQuery) async {
         activeTab.selectedDatabase = query.database
         activeTab.selectedCollection = query.collection
@@ -621,10 +781,10 @@ class AppViewModel {
         aggregationTruncated = false
         isLoading = true
 
+        let startTime = Date()
         do {
             let pipeline = try buildPipeline(from: pipelineStages.filter { $0.enabled })
             let cap = aggregationResultLimit
-            let startTime = Date()
 
             let results = try await mongoService.runAggregation(
                 database: database,
@@ -644,15 +804,32 @@ class AppViewModel {
                 collection: collection,
                 query: pipelineStagesToJSON(),
                 executionTimeMs: executionTimeMs,
-                docsReturned: results.count
+                docsReturned: results.count,
+                client: "compass+"
             )
             logQuery(logEntry)
+
+            // Best-effort: populate per-stage timing / outCount / index. Stays
+            // silent on permission errors or non-explainable terminal stages
+            // ($out, $merge) — those keep their existing nil values.
+            await runPipelineIncrementally(database: database, collection: collection)
         } catch is CancellationError {
             aggregationError = "Aggregation cancelled."
             aggregationResults = []
         } catch {
             aggregationError = error.localizedDescription
             aggregationResults = []
+            let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
+            logQuery(QueryLogEntry(
+                operationType: .aggregate,
+                database: database,
+                collection: collection,
+                query: pipelineStagesToJSON(),
+                executionTimeMs: executionTimeMs,
+                docsReturned: 0,
+                client: "compass+",
+                errorMessage: error.localizedDescription
+            ))
         }
 
         isLoading = false
@@ -713,6 +890,85 @@ class AppViewModel {
             pipeline.append([stage.type: parsedBody])
         }
         return pipeline
+    }
+
+    /// Walk the enabled stages and populate `outCount` / `ms` / `usedIndex`
+    /// from a single executionStats-verbosity explain. Failures are swallowed
+    /// — meta fields stay nil and the stage row simply shows no extra info.
+    func runPipelineIncrementally(database: String, collection: String) async {
+        let enabledIndices = pipelineStages.indices.filter { pipelineStages[$0].enabled }
+        guard !enabledIndices.isEmpty else { return }
+
+        // Build the pipeline once; explain only succeeds when every stage
+        // parses, so a single broken stage skips the whole pass.
+        let enabledStages = enabledIndices.map { pipelineStages[$0] }
+        let pipeline: [[String: Any]]
+        do {
+            pipeline = try buildPipeline(from: enabledStages)
+        } catch {
+            return
+        }
+
+        let explain: [String: Any]
+        do {
+            explain = try await mongoService.explainAggregation(
+                database: database, collection: collection, pipeline: pipeline
+            )
+        } catch {
+            return
+        }
+
+        let parsed = Self.parseAggregationExplainStages(explain)
+        // Walk side-by-side: parsed[i] corresponds to enabled stage at
+        // enabledIndices[i]. Disabled stages keep their previous metadata.
+        for (i, idx) in enabledIndices.enumerated() {
+            guard i < parsed.count else { break }
+            pipelineStages[idx].ms = parsed[i].ms
+            pipelineStages[idx].outCount = parsed[i].outCount
+            pipelineStages[idx].usedIndex = parsed[i].usedIndex
+        }
+    }
+
+    private struct StageMeta {
+        var ms: Double?
+        var outCount: Int?
+        var usedIndex: String?
+    }
+
+    /// Pull per-stage `executionTimeMillisEstimate` / `nReturned` /
+    /// `winningPlan.indexName` from an aggregation explain at executionStats
+    /// verbosity. Standalone-only path; shard envelopes fall back to all-nil.
+    private static func parseAggregationExplainStages(_ explain: [String: Any]) -> [StageMeta] {
+        guard let stages = explain["stages"] as? [[String: Any]] else { return [] }
+        return stages.map { stage in
+            var meta = StageMeta()
+            if let cursor = stage["$cursor"] as? [String: Any] {
+                if let es = cursor["executionStats"] as? [String: Any] {
+                    if let t = es["executionTimeMillis"] as? Int { meta.ms = Double(t) }
+                    else if let t = es["executionTimeMillis"] as? Double { meta.ms = t }
+                    if let n = es["nReturned"] as? Int { meta.outCount = n }
+                }
+                if let qp = cursor["queryPlanner"] as? [String: Any],
+                   let wp = qp["winningPlan"] as? [String: Any] {
+                    meta.usedIndex = Self.indexNameDeep(in: wp)
+                }
+            } else {
+                if let t = stage["executionTimeMillisEstimate"] as? Int { meta.ms = Double(t) }
+                else if let t = stage["executionTimeMillisEstimate"] as? Double { meta.ms = t }
+                if let n = stage["nReturned"] as? Int { meta.outCount = n }
+            }
+            return meta
+        }
+    }
+
+    /// `winningPlan.indexName` lives at the IXSCAN stage which may be wrapped
+    /// in FETCH/SHARD_MERGE/etc. — walk inputStage links until we find one.
+    private static func indexNameDeep(in plan: [String: Any]) -> String? {
+        if let name = plan["indexName"] as? String { return name }
+        if let inner = plan["inputStage"] as? [String: Any] {
+            return indexNameDeep(in: inner)
+        }
+        return nil
     }
 
     func savePipeline(name: String) {
@@ -789,6 +1045,29 @@ class AppViewModel {
         }
     }
 
+    /// Issue `killOp` for every currentOp running longer than `thresholdMs`.
+    /// Errors from individual kills are aggregated into `self.error`; the
+    /// list refresh runs once at the end regardless of partial failure.
+    func killAllSlowOps(thresholdMs: Int) async {
+        let targets = currentOps.filter { $0.executionTimeMs >= thresholdMs }
+        var failures: [String] = []
+        for op in targets {
+            do {
+                try await mongoService.killOp(opId: op.id)
+            } catch {
+                failures.append("opid \(op.id): \(error.localizedDescription)")
+            }
+        }
+        do {
+            currentOps = try await mongoService.getCurrentOps()
+        } catch {
+            failures.append("refresh: \(error.localizedDescription)")
+        }
+        if !failures.isEmpty {
+            self.error = "killAllSlow encountered errors: " + failures.joined(separator: "; ")
+        }
+    }
+
     // MARK: - Investigate
 
     func setProfilingLevel(_ level: Int, slowMs: Int) async {
@@ -817,6 +1096,98 @@ class AppViewModel {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Compute index recommendations for the active database. Loads
+    /// recent slow queries from `system.profile`, gathers existing
+    /// indexes for each unique namespace observed, and runs the pure
+    /// `IndexRecommendationService.recommend` engine.
+    ///
+    /// Filters out anything the user has previously dismissed in this
+    /// session so the list converges on actionable suggestions.
+    func computeIndexRecommendations() async {
+        guard let database = activeTab.selectedDatabase else {
+            self.error = "No database selected."
+            return
+        }
+        isComputingRecommendations = true
+        defer { isComputingRecommendations = false }
+        do {
+            let queries = try await mongoService.getSlowQueries(database: database, limit: 200)
+            slowQueries = queries
+
+            // Look up existing indexes once per distinct namespace so we
+            // don't re-fetch on every recommendation candidate.
+            var byNamespace: [String: [[String: Any]]] = [:]
+            let namespaces = Set(queries.map(\.namespace).filter { !$0.isEmpty })
+            for ns in namespaces {
+                let parts = ns.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else { continue }
+                let db = String(parts[0])
+                let coll = String(parts[1])
+                if coll.contains("system.") || db == "config" || db == "local" { continue }
+                do {
+                    byNamespace[ns] = try await mongoService.getIndexes(database: db, collection: coll)
+                } catch {
+                    // A single namespace failing shouldn't abort the run.
+                    continue
+                }
+            }
+
+            let candidates = IndexRecommendationService.recommend(
+                slowQueries: queries,
+                existingIndexesByNamespace: byNamespace
+            )
+            indexRecommendations = candidates.filter {
+                !dismissedRecommendationKeys.contains(recommendationKey($0))
+            }
+        } catch {
+            self.error = "Index analysis failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Issue `createIndex` on the namespace named in the recommendation,
+    /// then refresh recommendations so the newly-built index is reflected
+    /// in subsequent runs.
+    func createRecommendedIndex(_ rec: IndexRecommendation) async {
+        let parts = rec.namespace.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else {
+            self.error = "Recommendation has malformed namespace: \(rec.namespace)"
+            return
+        }
+        let db = String(parts[0])
+        let coll = String(parts[1])
+        do {
+            try await mongoService.createIndex(
+                database: db,
+                collection: coll,
+                name: rec.suggestedName,
+                keys: rec.keysDictionary.reduce(into: [String: Any]()) { $0[$1.key] = $1.value },
+                unique: false,
+                sparse: false
+            )
+            // Drop just this one from the list — re-running analysis is
+            // user-initiated.
+            indexRecommendations.removeAll { $0.id == rec.id }
+            // If the user happens to have this collection open, refresh
+            // its visible index list.
+            if activeTab.selectedDatabase == db && activeTab.selectedCollection == coll {
+                await fetchIndexes()
+            }
+        } catch {
+            self.error = "Failed to create index: \(error.localizedDescription)"
+        }
+    }
+
+    /// Hide a recommendation. Persists for the connection lifetime via
+    /// a content-based key so re-running analysis won't surface it again.
+    func dismissRecommendation(_ rec: IndexRecommendation) {
+        dismissedRecommendationKeys.insert(recommendationKey(rec))
+        indexRecommendations.removeAll { $0.id == rec.id }
+    }
+
+    private func recommendationKey(_ rec: IndexRecommendation) -> String {
+        rec.namespace + "::" + rec.spec.map { "\($0.field)_\($0.direction)" }.joined(separator: ",")
     }
 
     func fetchIndexes() async {
@@ -906,6 +1277,11 @@ class AppViewModel {
 
     // MARK: - Schema
 
+    /// Snapshot diff (path-level) for the schema view's stat cards. Populated
+    /// alongside `schemaFields` after each analyzeSchema pass.
+    var schemaAddedFields: [String] = []
+    var schemaRemovedFields: [String] = []
+
     func analyzeSchema(sampleSize: Int = 100) async {
         guard let database = activeTab.selectedDatabase,
               let collection = activeTab.selectedCollection else {
@@ -925,12 +1301,42 @@ class AppViewModel {
                 count: sampleSize
             )
             schemaFields = schemaService.analyzeSchema(documents: sampleDocs)
+
+            // Compute diff against the previous snapshot for this namespace
+            // and persist the new one.
+            let namespace = "\(database).\(collection)"
+            let currentPaths = Self.flattenSchemaPaths(schemaFields)
+            let previousPaths = storageService.loadSchemaSnapshot(for: namespace) ?? []
+            if previousPaths.isEmpty {
+                schemaAddedFields = []
+                schemaRemovedFields = []
+            } else {
+                let prevSet = Set(previousPaths)
+                let currSet = Set(currentPaths)
+                schemaAddedFields = currentPaths.filter { !prevSet.contains($0) }
+                schemaRemovedFields = previousPaths.filter { !currSet.contains($0) }
+            }
+            storageService.saveSchemaSnapshot(currentPaths, for: namespace)
         } catch {
             self.error = error.localizedDescription
             schemaFields = []
+            schemaAddedFields = []
+            schemaRemovedFields = []
         }
 
         isAnalyzingSchema = false
+    }
+
+    private static func flattenSchemaPaths(_ fields: [SchemaField], prefix: [String] = []) -> [String] {
+        var out: [String] = []
+        for f in fields {
+            let path = prefix + [f.name]
+            out.append(path.joined(separator: "."))
+            if let nested = f.nestedFields {
+                out.append(contentsOf: flattenSchemaPaths(nested, prefix: path))
+            }
+        }
+        return out
     }
 
     // MARK: - Code Generation

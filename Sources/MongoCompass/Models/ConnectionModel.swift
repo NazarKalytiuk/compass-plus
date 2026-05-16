@@ -27,9 +27,17 @@ struct ConnectionModel: Codable, Identifiable, Hashable {
 
         var color: Color {
             switch self {
-            case .local: return Theme.green
-            case .staging: return Theme.amber
-            case .production: return Theme.crimson
+            case .local: return Theme.info
+            case .staging: return Theme.warning
+            case .production: return Theme.accentDeep
+            }
+        }
+
+        var badgeKind: BadgeKind {
+            switch self {
+            case .local: return .info
+            case .staging: return .warning
+            case .production: return .accent
             }
         }
     }

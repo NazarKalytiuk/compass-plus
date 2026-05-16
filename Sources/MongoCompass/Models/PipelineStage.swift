@@ -7,6 +7,12 @@ struct PipelineStage: Codable, Identifiable {
     var enabled: Bool
     var collapsed: Bool
 
+    // Per-stage execution metadata, populated by runPipelineIncrementally().
+    // Optional so existing persisted pipelines decode cleanly.
+    var outCount: Int? = nil
+    var ms: Double? = nil
+    var usedIndex: String? = nil
+
     init(id: UUID = UUID(), type: String = "$match", body: String = "{}", enabled: Bool = true, collapsed: Bool = false) {
         self.id = id
         self.type = type

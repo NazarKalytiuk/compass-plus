@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Aggregations · orders</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-height: 0;
+  }
+  .pipe-body {
+    display: grid;
+    grid-template-columns: 480px 1fr;
+    gap: 14px;
+    padding: 14px 16px 16px;
+    overflow: hidden;
+    min-height: 0;
+    background: var(--surface-0);
+  }
+  .pipe-col {
+    display: flex; flex-direction: column;
+    gap: 10px;
+    overflow: auto;
+    min-height: 0;
+    padding-right: 4px;
+  }
+  .stage-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 10px 12px 12px;
+  }
+  .stage-card.is-collapsed { padding-bottom: 10px; }
+  .stage-head {
+    display: grid;
+    grid-template-columns: 14px auto 1fr auto auto auto;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .stage-head .drag-handle::before {
+    content: "⋮⋮";
+    letter-spacing: -2px;
+    font-size: 12px;
+  }
+  .stage-name {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .stage-card .pill.is-stage {
+    background: #EDE9FE; color: #6D28D9;
+    font-family: var(--font-mono);
+    text-transform: none;
+    letter-spacing: 0.02em;
+  }
+  .stage-card.is-match .pill.is-stage  { background: #DCFCE7; color: #15803D; }
+  .stage-card.is-group .pill.is-stage  { background: #FEEFE8; color: #B45309; }
+  .stage-card.is-project .pill.is-stage{ background: #E0EBFB; color: #1D4ED8; }
+  .stage-card.is-lookup .pill.is-stage { background: #EDE9FE; color: #6D28D9; }
+  .stage-card.is-sort .pill.is-stage   { background: #F3F4F6; color: #4B5563; }
+  .stage-card.is-limit .pill.is-stage  { background: #FEE2E2; color: #B91C1C; }
+  .stage-mini-code {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.7;
+    border-radius: var(--r-md);
+    padding: 10px 12px;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.25);
+    white-space: pre;
+    overflow: auto;
+    max-height: 160px;
+  }
+  .stage-meta {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .stage-meta .ms {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-soft);
+  }
+  .add-stage {
+    position: relative;
+    margin-top: 4px;
+  }
+  .add-stage-btn {
+    width: 100%;
+    height: 38px;
+    background: var(--surface-2);
+    border-radius: var(--r-lg);
+    color: var(--primary-700);
+    font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    box-shadow: var(--shadow-inset);
+  }
+  .add-popover {
+    position: absolute;
+    left: 0; right: 0; top: 44px;
+    background: var(--surface-1);
+    box-shadow: var(--shadow-lg);
+    border-radius: var(--r-lg);
+    padding: 6px;
+    z-index: 5;
+  }
+  .add-popover .add-row {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 12px;
+    padding: 6px 10px;
+    border-radius: var(--r-md);
+    align-items: center;
+    cursor: default;
+  }
+  .add-popover .add-row:hover { background: var(--surface-hover); }
+  .add-popover .stage-name { font-family: var(--font-mono); font-size: 12px; }
+  .add-popover .desc { color: var(--muted); font-size: 11.5px; }
+
+  .preview-pane {
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .preview-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 4px 4px 12px;
+  }
+  .preview-head .h-eyebrow { color: var(--muted); }
+  .preview-list {
+    display: flex; flex-direction: column; gap: 10px;
+    overflow: auto;
+    min-height: 0;
+    padding-right: 4px;
+  }
+  .preview-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 12px 14px;
+    font-family: var(--font-mono);
+    font-size: 12.25px;
+    line-height: 1.7;
+  }
+  .preview-card .head {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 8px;
+    font-family: var(--font-ui);
+  }
+  .preview-card .stage-tag {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--muted);
+  }
+  .preview-card .k { color: #1F4D8C; }
+  .preview-card .s { color: #15803D; }
+  .preview-card .n { color: #B45309; }
+  .preview-card .b { color: #6D28D9; }
+  .preview-card .row { display: grid; grid-template-columns: 200px 1fr; gap: 12px; }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+const dbs = [{
+  name: 'app_prod', size: '14.8 GB', open: true, collections: [
+    { name: 'users',     count: '1.4M'   },
+    { name: 'sessions',  count: '218K'   },
+    { name: 'orders',    count: '4.2M', active: true },
+    { name: 'invoices',  count: '912K'   },
+    { name: 'audit_log', count: '38.6M'  },
+  ]
+}, { name: 'analytics', size: '46.2 GB', collections: [] }];
+const tabs = [
+  { db: 'app_prod', coll: 'orders · pipeline', dotColor: '#16A34A' },
+  { db: 'app_prod', coll: 'users',  dotColor: '#16A34A' },
+];
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'aggregations', activeColl: { db: 'app_prod', coll: 'orders' }, dbs },
+  tabs, activeTab: 0,
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="crumb-db">app_prod</span>
+        <span class="crumb-sep">›</span>
+        <span class="crumb-coll">orders</span>
+        <span class="crumb-sep">›</span>
+        <span class="mono" style="color:var(--muted);">pipeline ·</span>
+        <span class="mono" style="color:var(--fg);font-weight:600;">monthly_revenue_by_tier</span>
+      </span>
+      <span class="pill is-accent">draft · unsaved</span>
+      <span class="toolbar-spacer"></span>
+      <button class="btn">Load saved…</button>
+      <button class="btn">Save pipeline</button>
+      <button class="btn">Explain</button>
+      <button class="btn btn-primary">▶ Run</button>
+    </div>
+
+    <div class="pipe-body">
+      <!-- LEFT: pipeline stages -->
+      <div class="pipe-col">
+        <div class="stage-card is-match">
+          <div class="stage-head">
+            <span class="drag-handle"></span>
+            <span class="pill is-stage">$match</span>
+            <span class="stage-name">filter completed orders</span>
+            <button class="icon-btn" title="Collapse">▾</button>
+            <button class="icon-btn" title="Duplicate">⎘</button>
+            <button class="icon-btn" title="Remove">✕</button>
+          </div>
+          <pre class="stage-mini-code">{
+  <span class="tok-key">"status"</span>: <span class="tok-str">"completed"</span>,
+  <span class="tok-key">"createdAt"</span>: {
+    <span class="tok-key">"$gte"</span>: <span class="tok-kw">ISODate</span>(<span class="tok-str">"2026-04-01"</span>),
+    <span class="tok-key">"$lt"</span>:  <span class="tok-kw">ISODate</span>(<span class="tok-str">"2026-05-01"</span>)
+  }
+}</pre>
+          <div class="stage-meta">
+            <span class="dot is-success"></span>
+            <span>Out: <strong style="color:var(--fg);">412,008</strong> documents</span>
+            <span style="margin-left:auto;" class="ms">8.4 ms · index used</span>
+          </div>
+        </div>
+
+        <div class="stage-card is-lookup">
+          <div class="stage-head">
+            <span class="drag-handle"></span>
+            <span class="pill is-stage">$lookup</span>
+            <span class="stage-name">join with users</span>
+            <button class="icon-btn">▾</button>
+            <button class="icon-btn">⎘</button>
+            <button class="icon-btn">✕</button>
+          </div>
+          <pre class="stage-mini-code">{
+  <span class="tok-key">"from"</span>: <span class="tok-str">"users"</span>,
+  <span class="tok-key">"localField"</span>: <span class="tok-str">"userId"</span>,
+  <span class="tok-key">"foreignField"</span>: <span class="tok-str">"_id"</span>,
+  <span class="tok-key">"as"</span>: <span class="tok-str">"user"</span>
+}</pre>
+          <div class="stage-meta">
+            <span class="dot is-warning"></span>
+            <span>Slow stage · consider a <span class="mono">{userId: 1}</span> index hint</span>
+            <span style="margin-left:auto;" class="ms">182 ms</span>
+          </div>
+        </div>
+
+        <div class="stage-card is-group">
+          <div class="stage-head">
+            <span class="drag-handle"></span>
+            <span class="pill is-stage">$group</span>
+            <span class="stage-name">sum by tier</span>
+            <button class="icon-btn">▾</button>
+            <button class="icon-btn">⎘</button>
+            <button class="icon-btn">✕</button>
+          </div>
+          <pre class="stage-mini-code">{
+  <span class="tok-key">"_id"</span>: <span class="tok-str">"$user.tier"</span>,
+  <span class="tok-key">"revenue"</span>:  { <span class="tok-key">"$sum"</span>: <span class="tok-str">"$total"</span> },
+  <span class="tok-key">"orders"</span>:   { <span class="tok-key">"$sum"</span>: <span class="tok-num">1</span> },
+  <span class="tok-key">"avgValue"</span>: { <span class="tok-key">"$avg"</span>: <span class="tok-str">"$total"</span> }
+}</pre>
+          <div class="stage-meta">
+            <span class="dot is-success"></span>
+            <span>Out: <strong style="color:var(--fg);">3</strong> groups</span>
+            <span style="margin-left:auto;" class="ms">22 ms</span>
+          </div>
+        </div>
+
+        <div class="stage-card is-project">
+          <div class="stage-head">
+            <span class="drag-handle"></span>
+            <span class="pill is-stage">$project</span>
+            <span class="stage-name">shape output</span>
+            <button class="icon-btn">▾</button>
+            <button class="icon-btn">⎘</button>
+            <button class="icon-btn">✕</button>
+          </div>
+          <pre class="stage-mini-code">{
+  <span class="tok-key">"tier"</span>: <span class="tok-str">"$_id"</span>,
+  <span class="tok-key">"revenue"</span>: { <span class="tok-key">"$round"</span>: [<span class="tok-str">"$revenue"</span>, <span class="tok-num">2</span>] },
+  <span class="tok-key">"orders"</span>: <span class="tok-num">1</span>,
+  <span class="tok-key">"avgValue"</span>: { <span class="tok-key">"$round"</span>: [<span class="tok-str">"$avgValue"</span>, <span class="tok-num">2</span>] },
+  <span class="tok-key">"_id"</span>: <span class="tok-num">0</span>
+}</pre>
+        </div>
+
+        <div class="stage-card is-sort is-collapsed">
+          <div class="stage-head">
+            <span class="drag-handle"></span>
+            <span class="pill is-stage">$sort</span>
+            <span class="stage-name">desc by revenue</span>
+            <button class="icon-btn">▸</button>
+            <button class="icon-btn">⎘</button>
+            <button class="icon-btn">✕</button>
+          </div>
+        </div>
+
+        <div class="add-stage">
+          <button class="add-stage-btn">＋ Add stage</button>
+          <div class="add-popover">
+            <div class="add-row"><span class="pill is-stage" style="background:#DCFCE7;color:#15803D;">$match</span><span><div class="stage-name">$match</div><div class="desc">Filter documents by a query expression</div></span></div>
+            <div class="add-row" style="background:var(--surface-hover);"><span class="pill is-stage" style="background:#FEEFE8;color:#B45309;">$group</span><span><div class="stage-name">$group</div><div class="desc">Group by an expression and accumulate</div></span></div>
+            <div class="add-row"><span class="pill is-stage" style="background:#E0EBFB;color:#1D4ED8;">$project</span><span><div class="stage-name">$project</div><div class="desc">Reshape the output schema</div></span></div>
+            <div class="add-row"><span class="pill is-stage" style="background:#EDE9FE;color:#6D28D9;">$lookup</span><span><div class="stage-name">$lookup</div><div class="desc">Left-outer join with another collection</div></span></div>
+            <div class="add-row"><span class="pill is-stage">$unwind</span><span><div class="stage-name">$unwind</div><div class="desc">Deconstruct an array field</div></span></div>
+            <div class="add-row"><span class="pill is-stage">$sort</span><span><div class="stage-name">$sort</div><div class="desc">Reorder the stream</div></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: preview -->
+      <div class="preview-pane">
+        <div class="preview-head">
+          <span class="h-eyebrow">Live preview · stage 5 of 5</span>
+          <span class="muted" style="font-size:12px;">3 documents · 214 ms total · sampled from 412k</span>
+          <span class="spacer" style="flex:1;"></span>
+          <span class="pill is-mono is-info">cached · 4s</span>
+          <button class="icon-btn" title="Refresh">↻</button>
+        </div>
+        <div class="preview-list">
+          <div class="preview-card">
+            <div class="head">
+              <span class="pill is-accent">tier · pro</span>
+              <span class="stage-tag">document 1 / 3</span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="pill is-success">+18.4% MoM</span>
+            </div>
+            <div class="row"><span class="k">"tier"</span> <span class="s">"pro"</span></div>
+            <div class="row"><span class="k">"revenue"</span> <span class="n">1,284,902.40</span></div>
+            <div class="row"><span class="k">"orders"</span> <span class="n">14,082</span></div>
+            <div class="row"><span class="k">"avgValue"</span> <span class="n">91.24</span></div>
+          </div>
+          <div class="preview-card">
+            <div class="head">
+              <span class="pill" style="background:#E0EBFB;color:#1D4ED8;">tier · team</span>
+              <span class="stage-tag">document 2 / 3</span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="pill is-success">+6.2% MoM</span>
+            </div>
+            <div class="row"><span class="k">"tier"</span> <span class="s">"team"</span></div>
+            <div class="row"><span class="k">"revenue"</span> <span class="n">412,556.10</span></div>
+            <div class="row"><span class="k">"orders"</span> <span class="n">2,108</span></div>
+            <div class="row"><span class="k">"avgValue"</span> <span class="n">195.71</span></div>
+          </div>
+          <div class="preview-card">
+            <div class="head">
+              <span class="pill">tier · free</span>
+              <span class="stage-tag">document 3 / 3</span>
+              <span class="spacer" style="flex:1;"></span>
+              <span class="pill is-warning">−2.1% MoM</span>
+            </div>
+            <div class="row"><span class="k">"tier"</span> <span class="s">"free"</span></div>
+            <div class="row"><span class="k">"revenue"</span> <span class="n">28,094.55</span></div>
+            <div class="row"><span class="k">"orders"</span> <span class="n">3,141</span></div>
+            <div class="row"><span class="k">"avgValue"</span> <span class="n">8.94</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

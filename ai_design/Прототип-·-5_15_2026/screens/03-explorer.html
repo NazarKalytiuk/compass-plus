@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Explorer · app_prod.users</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    min-height: 0;
+  }
+  .filter-bar { padding: 10px 16px 14px; background: var(--surface-1); }
+  .filter-well {
+    display: grid;
+    grid-template-columns: 2.2fr 1fr 1.4fr auto auto;
+    gap: 6px;
+    align-items: center;
+    background: var(--surface-3);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-inset);
+    padding: 6px;
+  }
+  .filter-well .field { background: transparent; box-shadow: none; height: 32px; }
+  .filter-well .field.is-focus { background: var(--surface-1); box-shadow: 0 0 0 2px var(--primary-50), 0 0 0 3px var(--primary); border-radius: var(--r-md); }
+  .results-toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 16px 12px;
+    background: var(--surface-1);
+  }
+  .results-toolbar .meta {
+    font-size: 12px;
+    color: var(--muted);
+    margin-left: 4px;
+  }
+  .results-toolbar .meta strong { color: var(--fg); font-variant-numeric: tabular-nums; font-weight: 600; }
+
+  .docs {
+    overflow: auto;
+    padding: 12px 16px 16px;
+    display: flex; flex-direction: column; gap: 10px;
+    background: var(--surface-0);
+  }
+  .doc-card {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 12px 14px 12px 10px;
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    gap: 8px;
+  }
+  .doc-card.is-hover { background: var(--surface-hover); box-shadow: var(--shadow-md); }
+  .doc-card .twist {
+    color: var(--muted-2);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 3px;
+    font-size: 11px;
+    cursor: default;
+  }
+  .doc-card.is-open .twist { transform: rotate(90deg); transform-origin: 50% 7px; }
+  .doc-head {
+    display: flex; align-items: center; gap: 10px;
+    flex-wrap: wrap;
+  }
+  .doc-id {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    background: var(--surface-3);
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: var(--fg-soft);
+  }
+  .doc-meta { color: var(--muted); font-size: 11.5px; font-family: var(--font-mono); }
+
+  .kv {
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--fg-soft);
+  }
+  .kv .k { color: #1F4D8C; }
+  .kv .s { color: #15803D; }
+  .kv .n { color: #B45309; }
+  .kv .b { color: #6D28D9; }
+  .kv .null { color: var(--muted-2); }
+  .kv .o { color: var(--muted); }
+  .kv .row { display: grid; grid-template-columns: 200px 1fr; gap: 12px; align-items: baseline; }
+  .kv .nest { padding-left: 16px; border-left: 1px dashed var(--hairline); margin-left: 6px; }
+  .kv .type-tag {
+    display: inline-block;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted-2);
+    margin-left: 6px;
+    font-weight: 600;
+    font-family: var(--font-ui);
+  }
+
+  .pager {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px;
+    background: var(--surface-1);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .pager .pgnum {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .pager .pgctrl {
+    display: inline-flex; align-items: center; gap: 2px;
+    background: var(--surface-3);
+    padding: 2px;
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-inset);
+  }
+  .pager .pgctrl .btn { height: 26px; padding: 0 9px; font-size: 12px; }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'explorer', activeColl: { db: 'app_prod', coll: 'users' } },
+  activeTab: 0,
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="crumb-db">app_prod</span>
+        <span class="crumb-sep">›</span>
+        <span class="crumb-coll">users</span>
+      </span>
+      <span class="pill is-mono">collection</span>
+      <span class="pill is-success">indexed · 8</span>
+      <span class="toolbar-spacer"></span>
+      <span class="seg">
+        <span class="seg-item is-active">Tree</span>
+        <span class="seg-item">Table</span>
+        <span class="seg-item">JSON</span>
+      </span>
+      <button class="btn">Export</button>
+      <button class="btn btn-primary">Insert</button>
+    </div>
+
+    <div class="filter-bar">
+      <div class="filter-well">
+        <div class="field is-mono is-focus">
+          <span class="field-lbl">filter</span>
+          <input value="{ tier: 'pro', createdAt: { $gte: ISODate('2026-04-01') } }">
+        </div>
+        <div class="field is-mono">
+          <span class="field-lbl">sort</span>
+          <input value="{ createdAt: -1 }">
+        </div>
+        <div class="field is-mono">
+          <span class="field-lbl">project</span>
+          <input value="{ email: 1, tier: 1, lastLoginAt: 1 }">
+        </div>
+        <button class="btn">Reset</button>
+        <button class="btn btn-primary">Find</button>
+      </div>
+    </div>
+
+    <div class="docs">
+      <div class="doc-card is-open">
+        <span class="twist">▸</span>
+        <div>
+          <div class="doc-head">
+            <span class="doc-id">_id : 6624c0f1a3b81e0042c19fd2</span>
+            <span class="pill is-accent">tier · pro</span>
+            <span class="pill is-success">active</span>
+            <span class="doc-meta">14 fields · 1.2 KB · indexed</span>
+          </div>
+          <div class="kv">
+            <div class="row"><span class="k">"email"</span> <span><span class="s">"helena.mendes@stitch.co"</span><span class="type-tag">string</span></span></div>
+            <div class="row"><span class="k">"tier"</span> <span><span class="s">"pro"</span></span></div>
+            <div class="row"><span class="k">"createdAt"</span> <span><span class="kw" style="color:#6D28D9">ISODate(</span><span class="s">"2026-05-12T08:14:21.004Z"</span><span style="color:#6D28D9">)</span><span class="type-tag">date</span></span></div>
+            <div class="row"><span class="k">"lastLoginAt"</span> <span><span style="color:#6D28D9">ISODate(</span><span class="s">"2026-05-15T11:02:48.220Z"</span><span style="color:#6D28D9">)</span></span></div>
+            <div class="row"><span class="k">"profile"</span> <span><span class="o">{ 4 fields }</span></span></div>
+            <div class="nest">
+              <div class="row"><span class="k">"firstName"</span> <span class="s">"Helena"</span></div>
+              <div class="row"><span class="k">"lastName"</span> <span class="s">"Mendes"</span></div>
+              <div class="row"><span class="k">"locale"</span> <span class="s">"pt-BR"</span></div>
+              <div class="row"><span class="k">"avatarUrl"</span> <span class="s">"https://cdn.stitch.co/u/h-mendes.png"</span></div>
+            </div>
+            <div class="row"><span class="k">"flags"</span> <span><span class="o">[ 3 items ]</span></span></div>
+            <div class="nest">
+              <div class="row"><span class="k">"0"</span> <span class="s">"early-access"</span></div>
+              <div class="row"><span class="k">"1"</span> <span class="s">"team-admin"</span></div>
+              <div class="row"><span class="k">"2"</span> <span class="s">"beta-pipelines"</span></div>
+            </div>
+            <div class="row"><span class="k">"verified"</span> <span><span class="b">true</span><span class="type-tag">bool</span></span></div>
+            <div class="row"><span class="k">"loginCount"</span> <span><span class="n">2,148</span><span class="type-tag">int32</span></span></div>
+            <div class="row"><span class="k">"_v"</span> <span class="n">7</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-card is-hover">
+        <span class="twist">▸</span>
+        <div>
+          <div class="doc-head">
+            <span class="doc-id">_id : 6624c0f1a3b81e0042c19fd3</span>
+            <span class="pill is-accent">tier · pro</span>
+            <span class="pill is-warning">2FA pending</span>
+            <span class="doc-meta">12 fields · 0.9 KB</span>
+          </div>
+          <div class="kv">
+            <div class="row"><span class="k">"email"</span> <span><span class="s">"y.tanaka@stitch.co"</span></span></div>
+            <div class="row"><span class="k">"tier"</span> <span class="s">"pro"</span></div>
+            <div class="row"><span class="k">"createdAt"</span> <span><span style="color:#6D28D9">ISODate(</span><span class="s">"2026-05-11T22:01:09.811Z"</span><span style="color:#6D28D9">)</span></span></div>
+            <div class="row"><span class="k">"profile"</span> <span class="o">{ 4 fields }</span></div>
+            <div class="row"><span class="k">"verified"</span> <span class="b">false</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-card loading-pulse">
+        <span class="twist">▸</span>
+        <div>
+          <div class="doc-head">
+            <span class="doc-id">_id : 6624c0f1a3b81e0042c19fd4</span>
+            <span class="pill is-mono">loading…</span>
+            <span class="doc-meta">streaming next page</span>
+          </div>
+          <div class="kv">
+            <div class="row"><span class="k">"email"</span> <span class="muted-2">·······································</span></div>
+            <div class="row"><span class="k">"tier"</span> <span class="muted-2">····</span></div>
+            <div class="row"><span class="k">"profile"</span> <span class="muted-2">····························</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-card">
+        <span class="twist">▸</span>
+        <div>
+          <div class="doc-head">
+            <span class="doc-id">_id : 6624c0f1a3b81e0042c19fd5</span>
+            <span class="pill is-accent">tier · pro</span>
+            <span class="doc-meta">11 fields · 0.8 KB</span>
+          </div>
+          <div class="kv">
+            <div class="row"><span class="k">"email"</span> <span><span class="s">"naomi.bramlett@stitch.co"</span></span></div>
+            <div class="row"><span class="k">"tier"</span> <span class="s">"pro"</span></div>
+            <div class="row"><span class="k">"createdAt"</span> <span><span style="color:#6D28D9">ISODate(</span><span class="s">"2026-05-11T13:54:01.117Z"</span><span style="color:#6D28D9">)</span></span></div>
+            <div class="row"><span class="k">"loginCount"</span> <span class="n">412</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="doc-card">
+        <span class="twist">▸</span>
+        <div>
+          <div class="doc-head">
+            <span class="doc-id">_id : 6624c0f1a3b81e0042c19fd6</span>
+            <span class="pill is-accent">tier · pro</span>
+            <span class="pill is-info">trialing</span>
+            <span class="doc-meta">13 fields · 1.1 KB</span>
+          </div>
+          <div class="kv">
+            <div class="row"><span class="k">"email"</span> <span><span class="s">"dimi.korol@labs.cz"</span></span></div>
+            <div class="row"><span class="k">"tier"</span> <span class="s">"pro"</span></div>
+            <div class="row"><span class="k">"trialEndsAt"</span> <span><span style="color:#6D28D9">ISODate(</span><span class="s">"2026-05-29T00:00:00.000Z"</span><span style="color:#6D28D9">)</span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pager">
+      <span>Showing <strong style="color:var(--fg);font-variant-numeric:tabular-nums;">1 – 25</strong> of <strong style="color:var(--fg);font-variant-numeric:tabular-nums;">8,412</strong> matched</span>
+      <span class="toolbar-spacer"></span>
+      <span class="muted">Page size</span>
+      <span class="seg">
+        <span class="seg-item">10</span>
+        <span class="seg-item is-active">25</span>
+        <span class="seg-item">50</span>
+        <span class="seg-item">100</span>
+      </span>
+      <span style="margin-left:8px;" class="pgctrl">
+        <button class="btn">‹ Prev</button>
+        <span class="pgnum" style="padding:0 8px;">1 / 337</span>
+        <button class="btn">Next ›</button>
+      </span>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

@@ -11,7 +11,28 @@ struct QueryLogEntry: Codable, Identifiable {
     let docsReturned: Int
     var isFavorite: Bool
 
-    init(id: UUID = UUID(), timestamp: Date = Date(), operationType: OperationType, database: String, collection: String, query: String, executionTimeMs: Int, docsReturned: Int, isFavorite: Bool = false) {
+    // Optional execution metadata. All defaults to nil so persisted entries
+    // from earlier versions decode cleanly.
+    var docsExamined: Int?
+    var plan: String?
+    var client: String?
+    var errorMessage: String?
+
+    init(
+        id: UUID = UUID(),
+        timestamp: Date = Date(),
+        operationType: OperationType,
+        database: String,
+        collection: String,
+        query: String,
+        executionTimeMs: Int,
+        docsReturned: Int,
+        isFavorite: Bool = false,
+        docsExamined: Int? = nil,
+        plan: String? = nil,
+        client: String? = nil,
+        errorMessage: String? = nil
+    ) {
         self.id = id
         self.timestamp = timestamp
         self.operationType = operationType
@@ -21,6 +42,10 @@ struct QueryLogEntry: Codable, Identifiable {
         self.executionTimeMs = executionTimeMs
         self.docsReturned = docsReturned
         self.isFavorite = isFavorite
+        self.docsExamined = docsExamined
+        self.plan = plan
+        self.client = client
+        self.errorMessage = errorMessage
     }
 
     enum OperationType: String, Codable, CaseIterable {

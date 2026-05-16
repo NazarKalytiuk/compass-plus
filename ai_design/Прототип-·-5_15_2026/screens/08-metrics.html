@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compass+ — Metrics</title>
+<link rel="stylesheet" href="../assets/styles.css">
+<style>
+  .canvas {
+    grid-area: main;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    background: var(--surface-0);
+    min-height: 0;
+  }
+  .metrics-body {
+    overflow: auto;
+    padding: 14px 16px 18px;
+    display: flex; flex-direction: column;
+    gap: 14px;
+    min-height: 0;
+  }
+  .kpi-row {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+  }
+  .kpi {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 14px 14px 8px;
+  }
+  .kpi .lbl {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  .kpi .val {
+    font-family: var(--font-display);
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    font-variant-numeric: tabular-nums;
+    margin-top: 6px;
+    line-height: 1.1;
+  }
+  .kpi .unit {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-weight: 500;
+    margin-left: 2px;
+  }
+  .kpi .delta {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    margin-top: 2px;
+  }
+  .delta.up { color: var(--success); }
+  .delta.down { color: var(--warning); }
+  .delta.bad { color: var(--danger); }
+
+  .sparkline {
+    display: block;
+    margin-top: 6px;
+    width: 100%;
+    height: 36px;
+  }
+
+  .charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 12px;
+    min-height: 0;
+  }
+  .chart {
+    background: var(--surface-1);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 14px 16px;
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .chart .head {
+    display: flex; align-items: baseline; gap: 8px;
+    margin-bottom: 6px;
+  }
+  .chart .title { font-family: var(--font-display); font-size: 14px; font-weight: 600; }
+  .chart .sub { font-size: 11.5px; color: var(--muted); }
+  .chart .legend {
+    display: flex; gap: 12px;
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .chart .legend .l {
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .chart .legend .l::before {
+    content: ""; width: 8px; height: 8px; border-radius: 2px;
+  }
+  .l.l-ops::before  { background: #F2673C; }
+  .l.l-cmd::before  { background: #6FB7E0; }
+  .l.l-mem::before  { background: #6D28D9; }
+  .l.l-cache::before{ background: #B98AE8; }
+  .l.l-in::before   { background: #15803D; }
+  .l.l-out::before  { background: #B45309; }
+  .l.l-lag::before  { background: #DC2626; }
+
+  .chart svg { flex: 1; width: 100%; min-height: 0; }
+</style>
+</head>
+<body>
+<script src="../assets/shell.js"></script>
+<script>
+function sparkPath(values, w, h, pad) {
+  pad = pad || 2;
+  const max = Math.max(...values), min = Math.min(...values);
+  const span = (max - min) || 1;
+  const step = (w - pad*2) / (values.length - 1);
+  return values.map((v, i) => {
+    const x = pad + i * step;
+    const y = pad + (1 - (v - min) / span) * (h - pad*2);
+    return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1);
+  }).join(' ');
+}
+function areaPath(values, w, h, pad) {
+  pad = pad || 4;
+  const max = Math.max(...values), min = Math.min(...values);
+  const span = (max - min) || 1;
+  const step = (w - pad*2) / (values.length - 1);
+  const pts = values.map((v, i) => {
+    const x = pad + i * step;
+    const y = pad + (1 - (v - min) / span) * (h - pad*2);
+    return x.toFixed(1) + ' ' + y.toFixed(1);
+  });
+  return 'M' + pts[0] + ' ' + pts.slice(1).map(p => 'L' + p).join(' ') + ' L' + (w - pad).toFixed(1) + ' ' + (h - pad).toFixed(1) + ' L' + pad.toFixed(1) + ' ' + (h - pad).toFixed(1) + ' Z';
+}
+function strokePath(values, w, h, pad) {
+  pad = pad || 4;
+  const max = Math.max(...values), min = Math.min(...values);
+  const span = (max - min) || 1;
+  const step = (w - pad*2) / (values.length - 1);
+  return values.map((v, i) => {
+    const x = pad + i * step;
+    const y = pad + (1 - (v - min) / span) * (h - pad*2);
+    return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1);
+  }).join(' ');
+}
+
+// Pseudo-random but deterministic real-looking series
+function series(base, amp, n, seed, drift) {
+  const out = [];
+  let v = base;
+  let s = seed;
+  for (let i = 0; i < n; i++) {
+    s = (s * 9301 + 49297) % 233280;
+    const r = s / 233280;
+    v = v + (r - 0.5) * amp + (drift || 0);
+    out.push(Math.max(0, v));
+  }
+  return out;
+}
+
+const opsData    = series(1180, 60, 60, 33,  1.2);
+const cmdData    = series(420,  40, 60, 21,  0.3);
+const memData    = series(2840, 50, 60, 17,  0.6);
+const cacheData  = series(1820, 35, 60, 51,  0.4);
+const netInData  = series(18.4, 1.2, 60, 12, 0.02);
+const netOutData = series(11.1, 0.9, 60, 28, 0.01);
+const lagData    = series(48,   8,  60, 41, -0.4);
+
+const kpis = [
+  { lbl: 'Ops · sec',     val: '1,284',   unit: '/s',     delta: '+8.2%',  trend: 'up',   d: opsData,    color: '#F2673C' },
+  { lbl: 'Connections',   val: '418',     unit: '/ 2k',   delta: '+12',    trend: 'up',   d: cmdData,    color: '#6FB7E0' },
+  { lbl: 'Resident mem',  val: '2.84',    unit: ' GB',    delta: '+72 MB', trend: 'down', d: memData,    color: '#6D28D9' },
+  { lbl: 'Net in · out',  val: '18.4',    unit: ' MB/s',  delta: '+0.3',   trend: 'up',   d: netInData,  color: '#15803D' },
+  { lbl: 'Repl lag',      val: '48',      unit: ' ms',    delta: '−4 ms',  trend: 'up',   d: lagData,    color: '#DC2626' },
+];
+
+Shell.mount({
+  root: document.body,
+  title: 'Compass+ — production-cluster',
+  sidebar: { activeNav: 'metrics', activeColl: null },
+  body: `
+    <div class="toolbar">
+      <span class="breadcrumb">
+        <span class="dot is-success"></span>
+        <span class="mono" style="color:var(--muted);">production-cluster</span>
+        <span class="crumb-sep">›</span>
+        <span class="mono" style="color:var(--fg);font-weight:600;">metrics</span>
+      </span>
+      <span class="pill is-success">all replicas healthy</span>
+      <span class="toolbar-spacer"></span>
+      <span class="muted" style="font-size:12px;">Window</span>
+      <span class="seg">
+        <span class="seg-item is-active">5m</span>
+        <span class="seg-item">15m</span>
+        <span class="seg-item">1h</span>
+        <span class="seg-item">24h</span>
+      </span>
+      <button class="btn">Export PNG</button>
+      <button class="btn btn-primary">Pause stream</button>
+    </div>
+
+    <div class="metrics-body">
+      <div class="kpi-row">
+        ${kpis.map(k => `
+          <div class="kpi">
+            <div class="lbl">${k.lbl}</div>
+            <div class="val">${k.val}<span class="unit">${k.unit}</span></div>
+            <div class="delta ${k.trend === 'up' ? 'up' : 'down'}">${k.delta} <span class="muted-2" style="font-weight:400;">vs 5m ago</span></div>
+            <svg class="sparkline" viewBox="0 0 200 36" preserveAspectRatio="none">
+              <defs><linearGradient id="g${k.lbl.replace(/\\W/g,'')}" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="${k.color}" stop-opacity="0.35"/>
+                <stop offset="100%" stop-color="${k.color}" stop-opacity="0"/>
+              </linearGradient></defs>
+              <path d="${areaPath(k.d, 200, 36, 2)}" fill="url(#g${k.lbl.replace(/\\W/g,'')})"/>
+              <path d="${strokePath(k.d, 200, 36, 2)}" fill="none" stroke="${k.color}" stroke-width="1.5"/>
+            </svg>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="charts-grid">
+        <div class="chart" style="grid-column: 1 / 3;">
+          <div class="head">
+            <span class="title">Operations</span>
+            <span class="sub">5-minute window · 5s resolution</span>
+            <span class="legend">
+              <span class="l l-ops">Reads + writes</span>
+              <span class="l l-cmd">Commands</span>
+            </span>
+          </div>
+          <svg viewBox="0 0 800 220" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="opsGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#F2673C" stop-opacity="0.30"/>
+                <stop offset="100%" stop-color="#F2673C" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="cmdGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#6FB7E0" stop-opacity="0.22"/>
+                <stop offset="100%" stop-color="#6FB7E0" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            ${[40, 80, 120, 160, 200].map(y => `<line x1="0" x2="800" y1="${y}" y2="${y}" stroke="rgba(17,24,39,0.05)" stroke-width="1"/>`).join('')}
+            ${Array.from({length: 6}).map((_,i) => `<line x1="${i*160}" x2="${i*160}" y1="0" y2="220" stroke="rgba(17,24,39,0.04)" stroke-width="1"/>`).join('')}
+            <path d="${areaPath(opsData, 800, 220, 4)}" fill="url(#opsGrad)"/>
+            <path d="${strokePath(opsData, 800, 220, 4)}" fill="none" stroke="#F2673C" stroke-width="1.8"/>
+            <path d="${areaPath(cmdData, 800, 220, 4)}" fill="url(#cmdGrad)"/>
+            <path d="${strokePath(cmdData, 800, 220, 4)}" fill="none" stroke="#6FB7E0" stroke-width="1.5"/>
+          </svg>
+          <div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:10.5px;color:var(--muted-2);padding-top:4px;">
+            <span>13:32:00</span><span>13:33:00</span><span>13:34:00</span><span>13:35:00</span><span>13:36:00</span><span>now</span>
+          </div>
+        </div>
+
+        <div class="chart">
+          <div class="head">
+            <span class="title">Memory</span>
+            <span class="sub">resident + cache (GB)</span>
+            <span class="legend">
+              <span class="l l-mem">Resident</span>
+              <span class="l l-cache">WT cache</span>
+            </span>
+          </div>
+          <svg viewBox="0 0 400 220" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="memGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#6D28D9" stop-opacity="0.28"/>
+                <stop offset="100%" stop-color="#6D28D9" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="cacheGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#B98AE8" stop-opacity="0.22"/>
+                <stop offset="100%" stop-color="#B98AE8" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            ${[55, 110, 165].map(y => `<line x1="0" x2="400" y1="${y}" y2="${y}" stroke="rgba(17,24,39,0.05)"/>`).join('')}
+            <path d="${areaPath(memData, 400, 220, 4)}" fill="url(#memGrad)"/>
+            <path d="${strokePath(memData, 400, 220, 4)}" fill="none" stroke="#6D28D9" stroke-width="1.8"/>
+            <path d="${areaPath(cacheData, 400, 220, 4)}" fill="url(#cacheGrad)"/>
+            <path d="${strokePath(cacheData, 400, 220, 4)}" fill="none" stroke="#B98AE8" stroke-width="1.5"/>
+          </svg>
+          <div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:10.5px;color:var(--muted-2);padding-top:4px;">
+            <span>13:32</span><span>13:34</span><span>now</span>
+          </div>
+        </div>
+
+        <div class="chart">
+          <div class="head">
+            <span class="title">Network</span>
+            <span class="sub">throughput (MB/s)</span>
+            <span class="legend">
+              <span class="l l-in">In</span>
+              <span class="l l-out">Out</span>
+            </span>
+          </div>
+          <svg viewBox="0 0 400 220" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="inGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#15803D" stop-opacity="0.28"/>
+                <stop offset="100%" stop-color="#15803D" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="outGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#B45309" stop-opacity="0.22"/>
+                <stop offset="100%" stop-color="#B45309" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            ${[55, 110, 165].map(y => `<line x1="0" x2="400" y1="${y}" y2="${y}" stroke="rgba(17,24,39,0.05)"/>`).join('')}
+            <path d="${areaPath(netInData, 400, 220, 4)}" fill="url(#inGrad)"/>
+            <path d="${strokePath(netInData, 400, 220, 4)}" fill="none" stroke="#15803D" stroke-width="1.8"/>
+            <path d="${areaPath(netOutData, 400, 220, 4)}" fill="url(#outGrad)"/>
+            <path d="${strokePath(netOutData, 400, 220, 4)}" fill="none" stroke="#B45309" stroke-width="1.5"/>
+          </svg>
+          <div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:10.5px;color:var(--muted-2);padding-top:4px;">
+            <span>13:32</span><span>13:34</span><span>now</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `
+});
+</script>
+</body>
+</html>

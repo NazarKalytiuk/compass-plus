@@ -1,6 +1,7 @@
 import Foundation
 import MongoKitten
 import MongoCore
+import Network
 
 // MARK: - MongoService Errors
 
@@ -62,6 +63,230 @@ final class MongoService: @unchecked Sendable {
     func disconnect() {
         connectedDatabase = nil
         connectionURI = nil
+    }
+
+    // MARK: - Diagnostics
+
+    /// Run a 3-phase diagnose pass on the given URI: DNS lookup, TLS handshake
+    /// probe (skipped for plaintext URIs), and an authenticated ping. Used by
+    /// ConnectView to populate the failure card with real values instead of
+    /// placeholder text. Never throws — failures land in the returned struct.
+    func diagnose(uri: String) async -> ConnectionDiagnostics {
+        var result = ConnectionDiagnostics()
+
+        guard let parsed = Self.parseMongoEndpoint(uri: uri) else {
+            return result
+        }
+        result.host = parsed.host
+        result.port = parsed.port
+        result.tlsEnabled = parsed.tls
+
+        // 1. DNS
+        result.dns = await Self.probeDNS(host: parsed.host)
+
+        // 2. TLS handshake (only when URI requests TLS)
+        if parsed.tls {
+            result.tls = await Self.probeTLS(host: parsed.host, port: parsed.port)
+        }
+
+        // 3. Auth — best signal is an actual connect + ping. We tear down the
+        // attempt so a probe doesn't leave a stray pool dangling.
+        result.auth = await Self.probeAuth(uri: uri)
+
+        return result
+    }
+
+    private struct ParsedEndpoint {
+        let host: String
+        let port: Int
+        let tls: Bool
+    }
+
+    private static func parseMongoEndpoint(uri: String) -> ParsedEndpoint? {
+        // URLComponents only handles standard schemes — mongodb / mongodb+srv
+        // resolve via the same scheme://[user:pass@]host[:port][/db][?opts]
+        // shape. Strip scheme, then split on '@' to drop credentials, then
+        // split on '/' to drop path.
+        let isSRV = uri.lowercased().hasPrefix("mongodb+srv://")
+        let isMongo = uri.lowercased().hasPrefix("mongodb://")
+        guard isSRV || isMongo else { return nil }
+
+        let schemeEnd = uri.range(of: "://")!.upperBound
+        var rest = String(uri[schemeEnd...])
+
+        if let at = rest.lastIndex(of: "@") {
+            rest = String(rest[rest.index(after: at)...])
+        }
+
+        var query = ""
+        if let q = rest.firstIndex(of: "?") {
+            query = String(rest[rest.index(after: q)...])
+            rest = String(rest[rest.startIndex..<q])
+        }
+
+        var hostPart = rest
+        if let slash = rest.firstIndex(of: "/") {
+            hostPart = String(rest[rest.startIndex..<slash])
+        }
+
+        // Multiple hosts (rs0/host1,host2,host3) — probe the first.
+        if let comma = hostPart.firstIndex(of: ",") {
+            hostPart = String(hostPart[hostPart.startIndex..<comma])
+        }
+
+        let host: String
+        let port: Int
+        if let colon = hostPart.lastIndex(of: ":") {
+            host = String(hostPart[hostPart.startIndex..<colon])
+            port = Int(hostPart[hostPart.index(after: colon)...]) ?? 27017
+        } else {
+            host = hostPart
+            port = isSRV ? 27017 : 27017
+        }
+
+        // SRV URIs imply TLS by default; otherwise look for tls/ssl in the
+        // querystring.
+        var tls = isSRV
+        for pair in query.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard kv.count == 2 else { continue }
+            let key = kv[0].lowercased()
+            let value = kv[1].lowercased()
+            if key == "tls" || key == "ssl" {
+                tls = (value == "true" || value == "1")
+            }
+        }
+
+        return ParsedEndpoint(host: host, port: port, tls: tls)
+    }
+
+    private static func probeDNS(host: String) async -> ConnectionDiagnostics.Phase {
+        let start = Date()
+        let resolved = await withCheckedContinuation { (cont: CheckedContinuation<[String], Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let h = Host(name: host)
+                let addrs = h.addresses
+                cont.resume(returning: addrs)
+            }
+        }
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        if resolved.isEmpty {
+            return .init(ok: false, detail: "no records · \(ms) ms", error: "host did not resolve")
+        }
+        return .init(ok: true, detail: "resolved · \(ms) ms", error: nil)
+    }
+
+    private static func probeTLS(host: String, port: Int) async -> ConnectionDiagnostics.Phase {
+        let nwHost = NWEndpoint.Host(host)
+        guard let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
+            return .init(ok: false, detail: "bad port", error: "invalid port \(port)")
+        }
+        let parameters = NWParameters(tls: .init(), tcp: .init())
+
+        return await withCheckedContinuation { (cont: CheckedContinuation<ConnectionDiagnostics.Phase, Never>) in
+            let connection = NWConnection(host: nwHost, port: nwPort, using: parameters)
+            let queue = DispatchQueue(label: "com.mongocompass.tlsProbe")
+            let start = Date()
+            let state = TLSProbeState()
+
+            let finish: @Sendable (ConnectionDiagnostics.Phase) -> Void = { phase in
+                guard state.tryClaim() else { return }
+                connection.cancel()
+                cont.resume(returning: phase)
+            }
+
+            connection.stateUpdateHandler = { connState in
+                switch connState {
+                case .ready:
+                    let ms = Int(Date().timeIntervalSince(start) * 1000)
+                    let version = Self.tlsVersionLabel(from: connection)
+                    finish(.init(ok: true, detail: "OK · \(version) · \(ms) ms", error: nil))
+                case .failed(let err):
+                    finish(.init(ok: false, detail: "failed", error: err.localizedDescription))
+                case .cancelled:
+                    finish(.init(ok: false, detail: "cancelled", error: "probe cancelled"))
+                default:
+                    break
+                }
+            }
+            connection.start(queue: queue)
+
+            // Hard cap so a black-hole host can't hang the diagnose pass.
+            queue.asyncAfter(deadline: .now() + 6) {
+                finish(.init(ok: false, detail: "timeout", error: "no TLS response after 6s"))
+            }
+        }
+    }
+
+    /// Thread-safe single-claim helper used by the TLS probe so the first
+    /// stateUpdateHandler firing wins over the deadline timer.
+    private final class TLSProbeState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var claimed = false
+        func tryClaim() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if claimed { return false }
+            claimed = true
+            return true
+        }
+    }
+
+    private static func tlsVersionLabel(from connection: NWConnection) -> String {
+        guard let metadata = connection.metadata(definition: NWProtocolTLS.definition)
+                as? NWProtocolTLS.Metadata else {
+            return "TLS"
+        }
+        let secMeta = metadata.securityProtocolMetadata
+        let version = sec_protocol_metadata_get_negotiated_tls_protocol_version(secMeta)
+        switch version {
+        case .TLSv13: return "TLS 1.3"
+        case .TLSv12: return "TLS 1.2"
+        case .TLSv11: return "TLS 1.1"
+        case .TLSv10: return "TLS 1.0"
+        case .DTLSv12: return "DTLS 1.2"
+        case .DTLSv10: return "DTLS 1.0"
+        @unknown default: return "TLS"
+        }
+    }
+
+    private static func probeAuth(uri: String) async -> ConnectionDiagnostics.Phase {
+        let start = Date()
+        do {
+            var effectiveURI = uri
+            let settings = try ConnectionSettings(effectiveURI)
+            if settings.targetDatabase == nil || settings.targetDatabase?.isEmpty == true {
+                if effectiveURI.hasSuffix("/") { effectiveURI += "admin" }
+                else { effectiveURI += "/admin" }
+            }
+            let db = try await MongoDatabase.connect(to: effectiveURI)
+            // A `ping` requires no privileges but still exercises the auth
+            // handshake, so a failure here is meaningful.
+            let pingCmd: Document = ["ping": Int32(1)]
+            let connection = try await db.pool.next(for: .basic)
+            _ = try await connection.executeCodable(
+                pingCmd,
+                decodeAs: Document.self,
+                namespace: db.commandNamespace,
+                sessionId: connection.implicitSessionId,
+                traceLabel: "DiagnosePing"
+            )
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            return .init(ok: true, detail: "OK · \(ms) ms", error: nil)
+        } catch {
+            let msg = error.localizedDescription
+            let lower = msg.lowercased()
+            let label: String
+            if lower.contains("auth") || lower.contains("unauthorized") {
+                label = "SCRAM auth rejected"
+            } else if lower.contains("timeout") || lower.contains("timed out") {
+                label = "no response"
+            } else if lower.contains("connection refused") {
+                label = "connection refused"
+            } else {
+                label = "failed"
+            }
+            return .init(ok: false, detail: label, error: msg)
+        }
     }
 
     // MARK: - Database Helpers
@@ -477,6 +702,60 @@ final class MongoService: @unchecked Sendable {
         return Self.documentToDict(explainDoc)
     }
 
+    /// Fetch the `$jsonSchema` validator (if any) configured on a collection.
+    /// Returns nil for collections without a validator, validators that aren't
+    /// `$jsonSchema`-flavoured, or when the server refuses the listCollections
+    /// command.
+    func getValidator(database: String, collection: String) async throws -> [String: Any]? {
+        let result = try await runCommand(database: database, command: [
+            "listCollections": 1,
+            "filter": ["name": collection]
+        ])
+        guard let cursor = result["cursor"] as? [String: Any],
+              let batch = cursor["firstBatch"] as? [[String: Any]],
+              let coll = batch.first,
+              let options = coll["options"] as? [String: Any],
+              let validator = options["validator"] as? [String: Any],
+              let jsonSchema = validator["$jsonSchema"] as? [String: Any] else {
+            return nil
+        }
+        return jsonSchema
+    }
+
+    /// Explain an aggregation pipeline at "executionStats" verbosity, returning
+    /// the raw explain dict. Used by AppViewModel.runPipelineIncrementally to
+    /// surface per-stage timing and chosen index.
+    func explainAggregation(
+        database: String,
+        collection: String,
+        pipeline: [[String: Any]]
+    ) async throws -> [String: Any] {
+        var pipelineDocs: [Document] = []
+        for stage in pipeline {
+            pipelineDocs.append(Self.dictToDocument(stage))
+        }
+        let aggregateInner: Document = [
+            "aggregate": collection,
+            "pipeline": pipelineDocs,
+            "cursor": [:] as Document
+        ]
+        let command: Document = [
+            "explain": aggregateInner,
+            "verbosity": "executionStats"
+        ]
+
+        let db = try self.database(named: database)
+        let connection = try await db.pool.next(for: .basic)
+        let reply = try await connection.executeCodable(
+            command,
+            decodeAs: Document.self,
+            namespace: db.commandNamespace,
+            sessionId: connection.implicitSessionId,
+            traceLabel: "ExplainAggregate"
+        )
+        return Self.documentToDict(reply)
+    }
+
     // MARK: - Sampling
 
     /// Sample random documents from a collection for schema analysis.
@@ -590,6 +869,30 @@ final class MongoService: @unchecked Sendable {
             metrics.host = host
         }
 
+        // extra_info — process-level CPU time and page faults. Server fills
+        // this on macOS / Linux builds; absent on some Windows builds.
+        if let extra = reply["extra_info"] as? Document {
+            metrics.cpuUserTimeUs = Self.extractInt64(extra["user_time_us"]) ?? 0
+            metrics.cpuSystemTimeUs = Self.extractInt64(extra["system_time_us"]) ?? 0
+            metrics.pageFaults = Self.extractInt64(extra["page_faults"]) ?? 0
+        }
+
+        // wiredTiger.* — only present on WiredTiger storage engine
+        // (default since 3.2). Field names contain spaces; that's
+        // canonical for these stats.
+        if let wt = reply["wiredTiger"] as? Document {
+            if let cache = wt["cache"] as? Document {
+                metrics.cacheBytesUsed = Self.extractInt64(cache["bytes currently in the cache"]) ?? 0
+                metrics.cacheBytesConfigured = Self.extractInt64(cache["maximum bytes configured"]) ?? 0
+                metrics.cachePagesReadIntoCache = Self.extractInt64(cache["pages read into cache"]) ?? 0
+                metrics.cachePagesRequestedFromCache = Self.extractInt64(cache["pages requested from the cache"]) ?? 0
+            }
+            if let blockManager = wt["block-manager"] as? Document {
+                metrics.diskBytesRead = Self.extractInt64(blockManager["bytes read"]) ?? 0
+                metrics.diskBytesWritten = Self.extractInt64(blockManager["bytes written"]) ?? 0
+            }
+        }
+
         return metrics
     }
 
@@ -645,15 +948,30 @@ final class MongoService: @unchecked Sendable {
         _ = try await runCommand(database: database, command: cmd)
     }
 
-    /// Get slow queries from the system.profile collection.
-    func getSlowQueries(database: String, limit: Int = 50) async throws -> [SlowQueryEntry] {
+    /// Read recent samples from `system.profile`, group them by query pattern
+    /// (op + ns + planSummary), and return aggregated stats per group:
+    /// representative sample (command/keys/docs/etc.) plus meanMs / p99Ms /
+    /// count / lastSeen. Limit applies to the raw sample read, not the
+    /// aggregated result count.
+    func getSlowQueries(database: String, limit: Int = 200) async throws -> [SlowQueryEntry] {
         let db = try self.database(named: database)
         let profileColl = db["system.profile"]
-        var results: [SlowQueryEntry] = []
 
         let sortDoc: Document = ["ts": Int32(-1)]
         let query = profileColl.find().sort(sortDoc).limit(limit)
 
+        struct RawSample {
+            let op: String
+            let ns: String
+            let command: String
+            let ms: Int
+            let keysExamined: Int
+            let docsExamined: Int
+            let planSummary: String
+            let ts: Date
+        }
+
+        var samples: [RawSample] = []
         for try await doc in query {
             let dict = Self.documentToDict(doc)
             let commandString: String = {
@@ -665,18 +983,62 @@ final class MongoService: @unchecked Sendable {
                 }
                 return "{}"
             }()
-            let entry = SlowQueryEntry(
-                operation: dict["op"] as? String ?? "unknown",
-                namespace: dict["ns"] as? String ?? "",
+            samples.append(RawSample(
+                op: dict["op"] as? String ?? "unknown",
+                ns: dict["ns"] as? String ?? "",
                 command: commandString,
-                executionTimeMs: dict["millis"] as? Int ?? 0,
+                ms: dict["millis"] as? Int ?? 0,
                 keysExamined: dict["keysExamined"] as? Int ?? 0,
                 docsExamined: dict["docsExamined"] as? Int ?? 0,
-                planSummary: dict["planSummary"] as? String ?? ""
+                planSummary: dict["planSummary"] as? String ?? "",
+                ts: dict["ts"] as? Date ?? Date()
+            ))
+        }
+
+        // Group key: op + ns + planSummary. command-text varies too much to
+        // form a useful key on its own (filters with bound parameter values).
+        var groups: [String: [RawSample]] = [:]
+        for s in samples {
+            let key = "\(s.op)|\(s.ns)|\(s.planSummary)"
+            groups[key, default: []].append(s)
+        }
+
+        var results: [SlowQueryEntry] = []
+        for (_, bucket) in groups {
+            guard let representative = bucket.max(by: { $0.ms < $1.ms }) else { continue }
+            let durations = bucket.map { $0.ms }
+            let mean = durations.reduce(0, +) / max(1, durations.count)
+            let p99 = Self.percentile(durations, p: 0.99)
+            let lastSeen = bucket.map { $0.ts }.max() ?? Date()
+
+            var entry = SlowQueryEntry(
+                operation: representative.op,
+                namespace: representative.ns,
+                command: representative.command,
+                executionTimeMs: representative.ms,
+                keysExamined: representative.keysExamined,
+                docsExamined: representative.docsExamined,
+                planSummary: representative.planSummary
             )
+            entry.meanMs = mean
+            entry.p99Ms = p99
+            entry.count = bucket.count
+            entry.lastSeen = lastSeen
             results.append(entry)
         }
+
+        // Surface the slowest patterns first.
+        results.sort { ($0.p99Ms, $0.meanMs) > ($1.p99Ms, $1.meanMs) }
         return results
+    }
+
+    /// Nearest-rank percentile for an integer array. Returns 0 for empty input.
+    private static func percentile(_ values: [Int], p: Double) -> Int {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let rank = Int((p * Double(sorted.count)).rounded(.up)) - 1
+        let clamped = Swift.max(0, Swift.min(sorted.count - 1, rank))
+        return sorted[clamped]
     }
 
     // MARK: - Monitoring
@@ -699,7 +1061,7 @@ final class MongoService: @unchecked Sendable {
             for (_, value) in inprog {
                 guard let opDoc = value as? Document else { continue }
                 let dict = Self.documentToDict(opDoc)
-                let op = CurrentOp(
+                var op = CurrentOp(
                     id: dict["opid"] as? Int ?? 0,
                     type: dict["type"] as? String ?? "",
                     op: dict["op"] as? String ?? "",
@@ -708,6 +1070,12 @@ final class MongoService: @unchecked Sendable {
                     executionTimeMs: dict["microsecs_running"] as? Int ?? ((dict["secs_running"] as? Int ?? 0) * 1000),
                     description: dict["desc"] as? String ?? ""
                 )
+                // locks.acquireCount = { r: N, w: N, R: N, W: N, ... }
+                if let locks = dict["locks"] as? [String: Any],
+                   let acquire = locks["acquireCount"] as? [String: Any] {
+                    op.readLocks = (acquire["r"] as? Int) ?? (acquire["R"] as? Int) ?? 0
+                    op.writeLocks = (acquire["w"] as? Int) ?? (acquire["W"] as? Int) ?? 0
+                }
                 ops.append(op)
             }
         }
@@ -717,6 +1085,52 @@ final class MongoService: @unchecked Sendable {
     /// Kill a running operation by opId.
     func killOp(opId: Int) async throws {
         _ = try await runCommand(database: "admin", command: ["killOp": 1, "op": opId])
+    }
+
+    /// Replica-set lag between PRIMARY and the most-behind voting SECONDARY,
+    /// in milliseconds. Returns nil for standalone deployments (the command
+    /// fails with NoConfig on a non-replicated mongod) or when no SECONDARY
+    /// is reachable.
+    func getReplicationLagMs() async throws -> Int? {
+        let admin = try adminDatabase()
+        let command: Document = ["replSetGetStatus": Int32(1)]
+        let connection = try await admin.pool.next(for: .basic)
+
+        let reply: Document
+        do {
+            reply = try await connection.executeCodable(
+                command,
+                decodeAs: Document.self,
+                namespace: admin.commandNamespace,
+                sessionId: connection.implicitSessionId,
+                traceLabel: "ReplSetGetStatus"
+            )
+        } catch {
+            // Standalone server, no replset config, or insufficient privileges.
+            return nil
+        }
+
+        guard let members = reply["members"] as? Document else { return nil }
+
+        // States per replSetGetStatus reference: 1 = PRIMARY, 2 = SECONDARY.
+        var primaryOptime: Date?
+        var secondaryOptimes: [Date] = []
+        for (_, value) in members {
+            guard let member = value as? Document else { continue }
+            let state = Self.extractInt(member["state"]) ?? 0
+            let optime = member["optimeDate"] as? Date
+            switch state {
+            case 1: if let optime { primaryOptime = optime }
+            case 2: if let optime { secondaryOptimes.append(optime) }
+            default: break
+            }
+        }
+
+        guard let primary = primaryOptime, let mostBehind = secondaryOptimes.min() else {
+            return nil
+        }
+        let lagSeconds = primary.timeIntervalSince(mostBehind)
+        return Swift.max(0, Int(lagSeconds * 1000))
     }
 
     // MARK: - Run Arbitrary Command

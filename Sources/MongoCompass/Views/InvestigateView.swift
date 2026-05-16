@@ -1,24 +1,36 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 struct InvestigateView: View {
     @Environment(AppViewModel.self) private var viewModel
 
-    enum Tab: String, CaseIterable {
-        case slowQueries = "Slow Queries"
-        case indexes = "Indexes"
-        case validation = "Validation"
+    enum RefreshInterval: String, CaseIterable, Identifiable {
+        case s1 = "1s"
+        case s2 = "2s"
+        case s10 = "10s"
+        case off = "Off"
+        var id: String { rawValue }
+        var seconds: TimeInterval? {
+            switch self {
+            case .s1: return 1; case .s2: return 2; case .s10: return 10; case .off: return nil
+            }
+        }
     }
 
-    @State private var selectedTab: Tab = .slowQueries
-    @State private var profilingLevelPicker: Int = 0
-    @State private var slowMsInput = "100"
-    @State private var expandedSlowQueryIds: Set<UUID> = []
+    @State private var refreshInterval: RefreshInterval = .s2
+    @State private var lastRefreshAt: Date = .now
+    @State private var refreshTask: Task<Void, Never>?
+
+    // Slow-queries threshold prompt
+    @State private var thresholdInput: String = ""
+    @State private var showThresholdPopover = false
 
     // Index creation
     @State private var indexKeysJSON = "{\"field\": 1}"
     @State private var indexUnique = false
     @State private var indexSparse = false
+    @State private var showCreateIndexSheet = false
 
     // Drop index
     @State private var dropIndexName: String?
@@ -29,54 +41,54 @@ struct InvestigateView: View {
     @State private var showExplainSheet = false
     @State private var isExplaining = false
 
-    // Validation
-    @State private var validationRules: [String: Any]?
+    // Current-ops filter popover
+    @State private var showOpsFilterPopover = false
+    @State private var opsFilterNamespace: String = ""
+    @State private var opsFilterOpType: String = "all"
+    @State private var opsFilterMinDurationMs: String = ""
+
+    // Slow-queries "Lower threshold…" popover persisted across launches.
+    @State private var showLowerThresholdPopover = false
+    @AppStorage("investigate.slowQueries.thresholdMs") private var persistedSlowMs: Int = 100
+
+    // Report export
+    @State private var isExportingReport = false
+    @State private var reportDocument: InvestigateReportDocument = .empty
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack {
-                Picker("", selection: $selectedTab) {
-                    ForEach(Tab.allCases, id: \.self) { tab in
-                        Text(tab.rawValue).tag(tab)
+            toolbar
+
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(spacing: 14) {
+                    currentOpsSection
+                    slowQueriesSection
+                    indexRecommendationsSection
+                    if viewModel.activeTab.selectedCollection != nil {
+                        existingIndexesSection
                     }
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 400)
-
-                Spacer()
-
-                if let db = viewModel.activeTab.selectedDatabase,
-                   let col = viewModel.activeTab.selectedCollection {
-                    Text("\(db).\(col)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textSecondary)
-                } else if let db = viewModel.activeTab.selectedDatabase {
-                    Text(db)
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textSecondary)
-                }
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 18)
             }
-            .padding(14)
-            .background(Theme.surface.opacity(0.4))
-
-            ThemedDivider()
-
-            switch selectedTab {
-            case .slowQueries:
-                slowQueriesTab
-            case .indexes:
-                indexesTab
-            case .validation:
-                validationTab
-            }
+            .background(Theme.surface0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.midnight)
+        .background(Theme.surface0)
+        .fileExporter(
+            isPresented: $isExportingReport,
+            document: reportDocument,
+            contentType: .json,
+            defaultFilename: "investigate-report-\(Self.exportFilenameFormatter.string(from: Date())).json"
+        ) { _ in /* swallow */ }
         .onAppear {
-            profilingLevelPicker = viewModel.profilingLevel
-            slowMsInput = "\(viewModel.slowMs)"
+            thresholdInput = "\(viewModel.slowMs)"
+            Task { await refreshAll() }
+            restartPolling()
         }
+        .onDisappear { refreshTask?.cancel() }
+        .onChange(of: refreshInterval) { _, _ in restartPolling() }
         .alert("Drop Index", isPresented: $showDropIndexAlert) {
             Button("Cancel", role: .cancel) { }
             Button("Drop", role: .destructive) {
@@ -87,557 +99,1006 @@ struct InvestigateView: View {
         } message: {
             Text("Are you sure you want to drop the index '\(dropIndexName ?? "")'? This action cannot be undone.")
         }
-        .sheet(isPresented: $showExplainSheet) {
-            explainSheet
+        .sheet(isPresented: $showExplainSheet) { explainSheet }
+        .sheet(isPresented: $showCreateIndexSheet) { createIndexSheet }
+    }
+
+    // MARK: - Top toolbar
+
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            breadcrumb
+            heartbeat
+            Spacer()
+
+            Text("Refresh")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.textMuted)
+
+            Segmented(
+                items: RefreshInterval.allCases,
+                label: { Text($0.rawValue) },
+                selection: $refreshInterval
+            )
+
+            Button {
+                exportReport()
+            } label: {
+                Text("Export report")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Theme.textSoft)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Theme.surface1)
+        .shadow(color: Theme.shadowAmbient.opacity(0.6), radius: 0.5, y: 0.5)
+    }
+
+    private var breadcrumb: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(viewModel.isConnected ? Theme.success : Theme.textMuted)
+                .frame(width: 7, height: 7)
+                .padding(.trailing, 2)
+            Text(viewModel.connectionName.isEmpty ? "cluster" : viewModel.connectionName)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.textMuted)
+            Text("investigate")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Theme.textPrimary)
         }
     }
 
-    // MARK: - Slow Queries Tab
-
-    private var slowQueriesTab: some View {
-        VStack(spacing: 0) {
-            // Profiling controls
-            HStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Profiling Level")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                    Picker("", selection: $profilingLevelPicker) {
-                        Text("0 - Off").tag(0)
-                        Text("1 - Slow").tag(1)
-                        Text("2 - All").tag(2)
-                    }
-                    .frame(width: 120)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Slow Query Threshold (ms)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                    TextField("100", text: $slowMsInput)
-                        .textFieldStyle(.themed)
-                        .frame(width: 100)
-                }
-
-                Button {
-                    let ms = Int(slowMsInput) ?? 100
-                    Task {
-                        await viewModel.setProfilingLevel(profilingLevelPicker, slowMs: ms)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "checkmark")
-                        Text("Apply")
-                    }
-                }
-                .buttonStyle(.accentCompact)
-
-                Spacer()
-
-                // Current profiling level display
-                HStack(spacing: 6) {
-                    Text("Current Level:")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textSecondary)
-                    Text("\(viewModel.profilingLevel)")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(profilingLevelColor(viewModel.profilingLevel))
-                }
-
-                Button {
-                    Task { await viewModel.fetchSlowQueries() }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "magnifyingglass")
-                        Text("Fetch Slow Queries")
-                    }
-                }
-                .buttonStyle(.accentCompact)
+    private var heartbeat: some View {
+        TimelineView(.periodic(from: .now, by: 1.0)) { context in
+            let elapsed = max(0, context.date.timeIntervalSince(lastRefreshAt))
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(Theme.success)
+                    .frame(width: 7, height: 7)
+                    .opacity(0.65 + 0.35 * (sin(elapsed * 2) + 1) / 2)
+                Text("live · \(formatElapsed(elapsed)) ago")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
             }
-            .padding(14)
-            .background(Theme.surface.opacity(0.3))
+        }
+    }
 
-            ThemedDivider()
+    // MARK: - Section: Current operations
 
-            // Slow queries list
-            if viewModel.slowQueries.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "tortoise")
-                        .font(.system(size: 40))
-                        .foregroundStyle(Theme.textSecondary)
-                    Text("No slow queries")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text("Enable profiling and fetch slow queries to see them here.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.textSecondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(viewModel.slowQueries) { entry in
-                            slowQueryRow(entry)
+    private var currentOpsSection: some View {
+        let ops = filteredOps(viewModel.currentOps)
+        let totalOps = viewModel.currentOps.count
+        let slowCount = ops.filter { $0.executionTimeMs >= 1000 }.count
+
+        return investCard {
+            sectionHead(
+                title: "Current operations",
+                sub: ops.count == totalOps
+                    ? "\(ops.count) active · \(slowCount) with duration > 1s"
+                    : "\(ops.count) of \(totalOps) match filter · \(slowCount) > 1s",
+                trailing: {
+                    AnyView(
+                        HStack(spacing: 6) {
+                            if slowCount > 0 {
+                                Text("\(slowCount) above SLA").pillBadge(.warning)
+                            } else if !ops.isEmpty {
+                                Text("healthy").pillBadge(.success)
+                            }
+                            opsFilterButton
                         }
-                    }
-                    .padding(14)
-                }
-            }
-        }
-    }
-
-    private func slowQueryRow(_ entry: SlowQueryEntry) -> some View {
-        let isExpanded = expandedSlowQueryIds.contains(entry.id)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            // Main row
-            HStack(spacing: 12) {
-                // Operation badge
-                Text(entry.operation)
-                    .pillBadge(color: Theme.skyBlue)
-
-                // Namespace
-                Text(entry.namespace)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-
-                Spacer()
-
-                // Execution time
-                Text("\(entry.executionTimeMs) ms")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundStyle(executionTimeColor(entry.executionTimeMs))
-
-                // Keys examined
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text("Keys: \(entry.keysExamined)")
-                        .font(.system(size: 10, design: .monospaced))
-                    Text("Docs: \(entry.docsExamined)")
-                        .font(.system(size: 10, design: .monospaced))
-                }
-                .foregroundStyle(Theme.textSecondary)
-
-                // Plan summary
-                Text(entry.planSummary)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.amber)
-                    .lineLimit(1)
-                    .frame(maxWidth: 150, alignment: .trailing)
-
-                // Expand/collapse
-                Button {
-                    if isExpanded {
-                        expandedSlowQueryIds.remove(entry.id)
-                    } else {
-                        expandedSlowQueryIds.insert(entry.id)
-                    }
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.textSecondary)
-            }
-
-            // Expanded command JSON
-            if isExpanded {
-                ThemedDivider()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Command")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        Text(entry.command)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.white)
-                            .textSelection(.enabled)
-                    }
-                    .frame(maxHeight: 120)
-                    .padding(8)
-                    .background(Theme.midnight)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Theme.border, lineWidth: 1)
                     )
                 }
-            }
-        }
-        .cardStyle(padding: 10, cornerRadius: 8)
-    }
+            )
 
-    // MARK: - Indexes Tab
-
-    private var indexesTab: some View {
-        VStack(spacing: 0) {
-            if viewModel.activeTab.selectedCollection == nil {
-                VStack(spacing: 16) {
-                    Image(systemName: "list.bullet.indent")
-                        .font(.system(size: 40))
-                        .foregroundStyle(Theme.textSecondary)
-                    Text("Select a collection")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text("Choose a collection from the sidebar to view and manage indexes.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.textSecondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if ops.isEmpty {
+                emptyRow(message: "No live operations.")
             } else {
-                ScrollView {
-                    VStack(spacing: 16) {
-                        // Fetch indexes button & existing indexes
-                        existingIndexesSection
+                tableHeader([
+                    ("Op",        .leading,  90),
+                    ("Namespace", .leading,  nil),
+                    ("Client",    .leading,  180),
+                    ("Locks",     .trailing, 80),
+                    ("Duration",  .trailing, 110),
+                    ("",          .trailing, 90),
+                ])
 
-                        ThemedDivider()
-
-                        // Create index section
-                        createIndexSection
-
-                        ThemedDivider()
-
-                        // Explain query section
-                        explainQuerySection
-                    }
-                    .padding(14)
+                ForEach(Array(ops.enumerated()), id: \.element.id) { _, op in
+                    currentOpRow(op)
                 }
             }
         }
     }
 
-    private var existingIndexesSection: some View {
+    private var opsFilterButton: some View {
+        let filterActive = !opsFilterNamespace.isEmpty
+            || opsFilterOpType != "all"
+            || !opsFilterMinDurationMs.isEmpty
+
+        return Button {
+            showOpsFilterPopover.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "line.3.horizontal.decrease").font(.system(size: 11))
+                Text(filterActive ? "Filter · on" : "Filter…")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(filterActive ? Theme.primaryDeep : Theme.textSoft)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(filterActive ? Theme.primaryTint : Theme.surface3)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showOpsFilterPopover, arrowEdge: .top) {
+            opsFilterPopover
+        }
+    }
+
+    private var opsFilterPopover: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("Filter current ops")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Namespace contains").sectionHeaderStyle()
+                TextField("e.g. users or orders.items", text: $opsFilterNamespace)
+                    .textFieldStyle(.themedSans)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Op type").sectionHeaderStyle()
+                Picker("", selection: $opsFilterOpType) {
+                    Text("All").tag("all")
+                    Text("query").tag("query")
+                    Text("insert").tag("insert")
+                    Text("update").tag("update")
+                    Text("remove").tag("remove")
+                    Text("command").tag("command")
+                    Text("getmore").tag("getmore")
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Min duration (ms)").sectionHeaderStyle()
+                TextField("0", text: $opsFilterMinDurationMs)
+                    .textFieldStyle(.themedSans)
+            }
             HStack {
-                Text("EXISTING INDEXES")
-                    .sectionHeaderStyle()
-
+                Button("Reset") {
+                    opsFilterNamespace = ""
+                    opsFilterOpType = "all"
+                    opsFilterMinDurationMs = ""
+                }
+                .buttonStyle(.ghost)
                 Spacer()
-
-                Button {
-                    Task { await viewModel.fetchIndexes() }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.clockwise")
-                        Text("Fetch Indexes")
-                    }
-                }
-                .buttonStyle(.accentCompact)
+                Button("Close") { showOpsFilterPopover = false }
+                    .buttonStyle(.accent)
             }
+        }
+        .padding(16)
+        .frame(width: 320)
+    }
 
-            if viewModel.indexes.isEmpty {
-                Text("No indexes loaded. Click Fetch Indexes to load them.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textSecondary)
-                    .padding(.vertical, 8)
-            } else {
-                VStack(spacing: 0) {
-                    // Table header
-                    HStack(spacing: 0) {
-                        Text("Name")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text("Key")
-                            .frame(width: 200, alignment: .leading)
-                        Text("Flags")
-                            .frame(width: 150, alignment: .leading)
-                        Text("Action")
-                            .frame(width: 80, alignment: .center)
-                    }
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Theme.textSecondary)
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 10)
-                    .background(Theme.surface)
+    private func filteredOps(_ ops: [CurrentOp]) -> [CurrentOp] {
+        let needle = opsFilterNamespace.trimmingCharacters(in: .whitespaces).lowercased()
+        let minMs = Int(opsFilterMinDurationMs) ?? 0
+        return ops.filter { op in
+            if !needle.isEmpty, !op.namespace.lowercased().contains(needle) { return false }
+            if opsFilterOpType != "all", op.op.lowercased() != opsFilterOpType { return false }
+            if minMs > 0, op.executionTimeMs < minMs { return false }
+            return true
+        }
+    }
 
-                    ThemedDivider()
-
-                    ForEach(Array(viewModel.indexes.enumerated()), id: \.offset) { _, index in
-                        let name = index["name"] as? String ?? "unknown"
-                        let keyDict = index["key"] as? [String: Any] ?? [:]
-                        let isUnique = index["unique"] as? Bool ?? false
-                        let isSparse = index["sparse"] as? Bool ?? false
-                        let keyJSON = formatKeyPattern(keyDict)
-
-                        HStack(spacing: 0) {
-                            Text(name)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .foregroundStyle(.white)
-                                .font(.system(size: 12, design: .monospaced))
-
-                            Text(keyJSON)
-                                .frame(width: 200, alignment: .leading)
-                                .foregroundStyle(Theme.textSecondary)
-                                .font(.system(size: 11, design: .monospaced))
-                                .lineLimit(1)
-
-                            HStack(spacing: 4) {
-                                if isUnique {
-                                    Text("Unique")
-                                        .pillBadge(color: Theme.amber)
-                                }
-                                if isSparse {
-                                    Text("Sparse")
-                                        .pillBadge(color: Theme.skyBlue)
-                                }
-                            }
-                            .frame(width: 150, alignment: .leading)
-
-                            if name != "_id_" {
-                                Button {
-                                    dropIndexName = name
-                                    showDropIndexAlert = true
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .foregroundStyle(Theme.crimson)
-                                }
-                                .buttonStyle(.plain)
-                                .frame(width: 80)
-                            } else {
-                                Color.clear
-                                    .frame(width: 80)
-                            }
-                        }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 10)
-                    }
+    private func currentOpRow(_ op: CurrentOp) -> some View {
+        let severity = opSeverity(op.executionTimeMs)
+        let canKill = op.executionTimeMs >= 500
+        return tableRow(tint: severity.rowTint) {
+            HStack(spacing: 0) {
+                HStack {
+                    Text(op.op).pillBadge(severity.opBadge)
+                    Spacer(minLength: 0)
                 }
-                .cardStyle(padding: 0, cornerRadius: 8)
+                .frame(width: 90, alignment: .leading)
+
+                Text(op.namespace)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(op.client)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(width: 180, alignment: .leading)
+
+                Text("R \(op.readLocks) / W \(op.writeLocks)")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle((op.readLocks + op.writeLocks) > 0 ? Theme.textSoft : Theme.textMuted)
+                    .frame(width: 80, alignment: .trailing)
+
+                Text(formatDuration(op.executionTimeMs))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(severity.durationColor)
+                    .frame(width: 110, alignment: .trailing)
+
+                HStack {
+                    Spacer()
+                    Button {
+                        Task { await viewModel.killOp(opId: op.id) }
+                    } label: {
+                        Text("Kill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(canKill ? Theme.danger : Theme.danger.opacity(0.35))
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canKill)
+                }
+                .frame(width: 90, alignment: .trailing)
             }
         }
     }
 
-    private var createIndexSection: some View {
+    private struct OpSeverity {
+        let opBadge: BadgeKind
+        let rowTint: Color?
+        let durationColor: Color
+    }
+
+    private func opSeverity(_ ms: Int) -> OpSeverity {
+        if ms >= 5000 {
+            return OpSeverity(opBadge: .danger,  rowTint: Theme.danger.opacity(0.06),  durationColor: Theme.danger)
+        } else if ms >= 1000 {
+            return OpSeverity(opBadge: .warning, rowTint: Theme.warning.opacity(0.06), durationColor: Theme.warning)
+        } else if ms >= 200 {
+            return OpSeverity(opBadge: .info,    rowTint: nil, durationColor: Theme.info)
+        } else {
+            return OpSeverity(opBadge: .neutral, rowTint: nil, durationColor: Theme.successDeep)
+        }
+    }
+
+    // MARK: - Section: Slow queries
+
+    private var slowQueriesSection: some View {
+        let queries = viewModel.slowQueries
+        let affected = Set(queries.map { $0.namespace }).count
+
+        return investCard {
+            sectionHead(
+                title: "Slow queries",
+                sub: "threshold \(viewModel.slowMs)ms · \(queries.count) entries",
+                trailing: {
+                    AnyView(
+                        HStack(spacing: 6) {
+                            if affected > 0 {
+                                Text("\(affected) endpoint\(affected == 1 ? "" : "s") affected").pillBadge(.danger)
+                            }
+                            lowerThresholdButton
+                            thresholdMenu
+                        }
+                    )
+                }
+            )
+
+            if queries.isEmpty {
+                emptyRow(message: "No slow queries recorded. Enable profiling and refresh.")
+                HStack {
+                    Spacer()
+                    Button {
+                        Task { await viewModel.fetchSlowQueries() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "magnifyingglass").font(.system(size: 11))
+                            Text("Fetch slow queries")
+                        }
+                    }
+                    .buttonStyle(.accentCompact)
+                    .padding(.bottom, 12)
+                    Spacer()
+                }
+            } else {
+                tableHeader([
+                    ("Pattern",    .leading,  nil),
+                    ("Collection", .leading,  180),
+                    ("Mean ms",    .trailing, 80),
+                    ("P99 ms",     .trailing, 80),
+                    ("Count",      .trailing, 60),
+                    ("Last seen",  .leading,  100),
+                    ("Scanned",    .trailing, 80),
+                    ("Plan",       .leading,  120),
+                    ("",           .trailing, 80),
+                ])
+
+                ForEach(queries) { entry in
+                    slowQueryRow(entry)
+                }
+            }
+        }
+    }
+
+    private var lowerThresholdButton: some View {
+        Button {
+            showLowerThresholdPopover.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.down").font(.system(size: 10, weight: .semibold))
+                Text("Lower threshold…")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(Theme.textSoft)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Theme.surface3)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showLowerThresholdPopover, arrowEdge: .top) {
+            lowerThresholdPopover
+        }
+    }
+
+    private var lowerThresholdPopover: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("CREATE INDEX")
-                .sectionHeaderStyle()
+            Text("Lower slow-query threshold")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
 
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Index Keys (JSON)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                    TextField("{\"field\": 1}", text: $indexKeysJSON)
-                        .textFieldStyle(.themed)
-                }
+            Stepper("Threshold: \(persistedSlowMs) ms",
+                    value: $persistedSlowMs,
+                    in: 10...10_000,
+                    step: 10)
+                .padding(.vertical, 4)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Options")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.textSecondary)
-                    HStack(spacing: 12) {
-                        Toggle("Unique", isOn: $indexUnique)
-                            .toggleStyle(.checkbox)
-                        Toggle("Sparse", isOn: $indexSparse)
-                            .toggleStyle(.checkbox)
+            Text("Persisted across launches. Applies on the next profiling level change.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Apply now") {
+                    Task {
+                        await viewModel.setProfilingLevel(viewModel.profilingLevel, slowMs: persistedSlowMs)
                     }
-                    .padding(.vertical, 4)
-                }
-
-                Button {
-                    createIndexFromInput()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus.circle.fill")
-                        Text("Create")
-                    }
+                    showLowerThresholdPopover = false
                 }
                 .buttonStyle(.accent)
             }
         }
-        .cardStyle()
+        .padding(16)
+        .frame(width: 300)
     }
 
-    private var explainQuerySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("EXPLAIN QUERY")
-                .sectionHeaderStyle()
+    private var thresholdMenu: some View {
+        Menu {
+            Section("Slow threshold (ms)") {
+                Button("50ms")  { applyThreshold(50) }
+                Button("100ms") { applyThreshold(100) }
+                Button("250ms") { applyThreshold(250) }
+                Button("500ms") { applyThreshold(500) }
+                Button("1000ms") { applyThreshold(1000) }
+            }
+            Divider()
+            Section("Profiling level") {
+                Button("Off")  { Task { await viewModel.setProfilingLevel(0, slowMs: viewModel.slowMs) } }
+                Button("Slow only") { Task { await viewModel.setProfilingLevel(1, slowMs: viewModel.slowMs) } }
+                Button("All ops")   { Task { await viewModel.setProfilingLevel(2, slowMs: viewModel.slowMs) } }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "slider.horizontal.3").font(.system(size: 11))
+                Text("Settings")
+            }
+            .font(.system(size: 12.5, weight: .medium))
+            .foregroundStyle(Theme.textSoft)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
 
-            HStack {
-                Text("Uses the current tab's filter: ")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textSecondary)
-                Text(viewModel.activeTab.filter.isEmpty ? "{}" : viewModel.activeTab.filter)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.white)
+    private func applyThreshold(_ ms: Int) {
+        Task { await viewModel.setProfilingLevel(viewModel.profilingLevel, slowMs: ms) }
+    }
+
+    private func slowQueryRow(_ entry: SlowQueryEntry) -> some View {
+        let p99 = entry.p99Ms
+        let (durColor, rowTint): (Color, Color?) = {
+            if p99 >= 1000 { return (Theme.danger,  Theme.danger.opacity(0.06)) }
+            if p99 >= 250  { return (Theme.warning, Theme.warning.opacity(0.06)) }
+            return (Theme.successDeep, nil)
+        }()
+        let scanRatio = entry.keysExamined > 0
+            ? Double(entry.docsExamined) / Double(entry.keysExamined)
+            : Double(entry.docsExamined)
+        let isCollscan = entry.planSummary.uppercased().contains("COLLSCAN") || entry.planSummary.isEmpty
+
+        return tableRow(tint: rowTint) {
+            HStack(spacing: 0) {
+                Text(queryPreview(entry.command))
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(Theme.textSoft)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
+                Text(entry.namespace)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .frame(width: 180, alignment: .leading)
+
+                Text(entry.meanMs.formatted())
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 80, alignment: .trailing)
+
+                Text(p99.formatted())
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(durColor)
+                    .frame(width: 80, alignment: .trailing)
+
+                Text(entry.count.formatted())
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: 60, alignment: .trailing)
+
+                Text(Self.relativeLastSeenFormatter.localizedString(for: entry.lastSeen, relativeTo: Date()))
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.textMuted)
+                    .lineLimit(1)
+                    .frame(width: 100, alignment: .leading)
+
+                HStack(spacing: 4) {
+                    Spacer()
+                    Text(entry.docsExamined.formatted())
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(scanRatio >= 10 ? Theme.danger
+                                         : (scanRatio >= 2 ? Theme.warning : Theme.textSecondary))
+                }
+                .frame(width: 80, alignment: .trailing)
+
+                HStack {
+                    Text(entry.planSummary.isEmpty ? "COLLSCAN" : entry.planSummary.uppercased())
+                        .pillBadge(isCollscan ? .danger : .success)
+                    Spacer(minLength: 0)
+                }
+                .frame(width: 120, alignment: .leading)
+
+                HStack {
+                    Spacer()
+                    Button {
+                        Task {
+                            isExplaining = true
+                            let result = await viewModel.explainCurrentQuery()
+                            explainResult = result
+                            isExplaining = false
+                            if result != nil { showExplainSheet = true }
+                        }
+                    } label: {
+                        Text("Explain")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Theme.textSoft)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .background(Theme.surface3)
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .frame(width: 80, alignment: .trailing)
+            }
+        }
+    }
+
+    private static let relativeLastSeenFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    // MARK: - Section: Index recommendations
+
+    private var indexRecommendationsSection: some View {
+        let recs = viewModel.indexRecommendations
+        let totalSavings = recs.reduce(0) { $0 + $1.totalExecTimeMs }
+
+        return investCard {
+            sectionHead(
+                title: "Index recommendations",
+                sub: recs.isEmpty
+                    ? "Run an analysis to surface compound-index suggestions."
+                    : "\(recs.count) suggestion\(recs.count == 1 ? "" : "s") based on recent query patterns",
+                trailing: {
+                    HStack(spacing: 6) {
+                        if !recs.isEmpty {
+                            AnyView(Text("est. −\(formatDuration(totalSavings)) total").pillBadge(.success))
+                        } else {
+                            AnyView(EmptyView())
+                        }
+                        AnyView(
+                            Button {
+                                Task { await viewModel.computeIndexRecommendations() }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    if viewModel.isComputingRecommendations {
+                                        ProgressView().controlSize(.mini).scaleEffect(0.65)
+                                    } else {
+                                        Image(systemName: "wand.and.stars").font(.system(size: 11))
+                                    }
+                                    Text(viewModel.isComputingRecommendations ? "Analysing…" : "Analyse")
+                                }
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Theme.textSoft)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.isComputingRecommendations)
+                        )
+                    }
+                }
+            )
+
+            if recs.isEmpty {
+                emptyRow(message: viewModel.slowQueries.isEmpty
+                    ? "No analysis yet. Fetch slow queries above, then Analyse to compute recommendations."
+                    : "No actionable suggestions — queries are already well-indexed.")
+            } else {
+                recommendationsGrid(recs)
+            }
+        }
+    }
+
+    private func recommendationsGrid(_ recs: [IndexRecommendation]) -> some View {
+        // Pair items two-per-row in a manual 2-col grid to allow per-item shadows.
+        let columns: [GridItem] = [
+            GridItem(.flexible(), spacing: 12),
+            GridItem(.flexible(), spacing: 12),
+        ]
+        return LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(recs) { rec in
+                recommendationCard(rec)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+    }
+
+    private func recommendationCard(_ rec: IndexRecommendation) -> some View {
+        let impactKind: BadgeKind = {
+            switch rec.impact {
+            case .high:   return .danger
+            case .medium: return .warning
+            case .low:    return .neutral
+            }
+        }()
+        let impactLabel: String = {
+            switch rec.impact {
+            case .high:   return "high impact"
+            case .medium: return "medium impact"
+            case .low:    return "low impact"
+            }
+        }()
+        let savingsMs = rec.totalExecTimeMs
+        // 0..2000ms range → 0..1 width
+        let widthRatio = max(0.08, min(1.0, Double(savingsMs) / 2000.0))
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(impactLabel).pillBadge(impactKind)
+                Text(rec.namespace)
+                    .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
                 Spacer()
+                Text("\(rec.supportingQueries) queries")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
+            }
+
+            Text(rec.indexJSON)
+                .font(.system(size: 12.5, design: .monospaced))
+                .foregroundStyle(Theme.textSoft)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.surface1)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .shadow(color: Theme.shadowAmbient, radius: 1, y: 0.5)
+
+            HStack(spacing: 10) {
+                Text("Predicted impact").sectionHeaderStyle()
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Theme.surface3)
+                            .frame(height: 8)
+                        Capsule()
+                            .fill(Theme.brandGradient)
+                            .frame(width: max(2, geo.size.width * widthRatio), height: 8)
+                    }
+                }
+                .frame(height: 8)
+                Text("−\(formatDuration(savingsMs))")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Theme.successDeep)
+                    .frame(width: 60, alignment: .trailing)
+            }
+
+            Text(rec.rationale)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                Spacer()
+                Button {
+                    viewModel.dismissRecommendation(rec)
+                } label: {
+                    Text("Dismiss")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.textSoft)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
 
                 Button {
-                    isExplaining = true
-                    Task {
-                        let result = await viewModel.explainCurrentQuery()
-                        explainResult = result
-                        isExplaining = false
-                        if result != nil {
-                            showExplainSheet = true
-                        }
-                    }
+                    Task { await viewModel.createRecommendedIndex(rec) }
                 } label: {
-                    HStack(spacing: 4) {
-                        if isExplaining {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Image(systemName: "doc.text.magnifyingglass")
-                        Text("Explain")
-                    }
+                    Text("Create index")
                 }
                 .buttonStyle(.accentCompact)
-                .disabled(isExplaining)
             }
         }
-        .cardStyle()
+        .padding(14)
+        .background(Theme.surface2)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
-    // MARK: - Validation Tab
+    // MARK: - Section: Existing indexes (collection-scoped)
 
-    private var validationTab: some View {
-        VStack(spacing: 0) {
-            if viewModel.activeTab.selectedCollection == nil {
-                VStack(spacing: 16) {
-                    Image(systemName: "checkmark.shield")
-                        .font(.system(size: 40))
-                        .foregroundStyle(Theme.textSecondary)
-                    Text("Select a collection")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text("Choose a collection from the sidebar to view validation rules.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.textSecondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                VStack(spacing: 16) {
-                    HStack {
-                        Text("SCHEMA VALIDATION")
-                            .sectionHeaderStyle()
-                        Spacer()
-
-                        Button {
-                            Task {
-                                let stats = await viewModel.getCollectionStats()
-                                if let options = stats?["options"] as? [String: Any],
-                                   let validator = options["validator"] as? [String: Any] {
-                                    validationRules = validator
-                                } else {
-                                    validationRules = nil
+    private var existingIndexesSection: some View {
+        investCard {
+            sectionHead(
+                title: "Existing indexes",
+                sub: viewModel.activeTab.selectedCollection ?? "—",
+                trailing: {
+                    HStack(spacing: 6) {
+                        AnyView(
+                            Button {
+                                Task { await viewModel.fetchIndexes() }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "arrow.clockwise").font(.system(size: 11))
+                                    Text("Refresh")
+                                }
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Theme.textSoft)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 5)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        )
+                        AnyView(
+                            Button {
+                                showCreateIndexSheet = true
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "plus").font(.system(size: 11, weight: .bold))
+                                    Text("Create")
                                 }
                             }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.clockwise")
-                                Text("Load Rules")
-                            }
-                        }
-                        .buttonStyle(.accentCompact)
-                    }
-
-                    if let rules = validationRules {
-                        let json = prettyPrintJSON(rules)
-                        ScrollView {
-                            Text(json)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundStyle(.white)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                                .background(Theme.midnight)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(Theme.border, lineWidth: 1)
-                                )
-                        }
-                    } else {
-                        VStack(spacing: 12) {
-                            Image(systemName: "checkmark.shield")
-                                .font(.system(size: 36))
-                                .foregroundStyle(Theme.textSecondary)
-                            Text("No validation rules found")
-                                .font(.system(size: 14))
-                                .foregroundStyle(Theme.textSecondary)
-                            Text("Click Load Rules to check for schema validation on this collection.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.textSecondary.opacity(0.7))
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .buttonStyle(.accentCompact)
+                        )
                     }
                 }
-                .padding(14)
+            )
+
+            if viewModel.indexes.isEmpty {
+                emptyRow(message: "No indexes loaded for this collection. Press Refresh to fetch.")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(viewModel.indexes.enumerated()), id: \.offset) { i, index in
+                        existingIndexRow(index, isLast: i == viewModel.indexes.count - 1)
+                    }
+                }
             }
         }
     }
 
-    // MARK: - Explain Sheet
+    private func existingIndexRow(_ index: [String: Any], isLast: Bool) -> some View {
+        let name = index["name"] as? String ?? "unknown"
+        let keyDict = index["key"] as? [String: Any] ?? [:]
+        let isUnique = index["unique"] as? Bool ?? false
+        let isSparse = index["sparse"] as? Bool ?? false
+        let isPrimary = name == "_id_"
+        let keyJSON = formatKeyPattern(keyDict)
+
+        return HStack(spacing: 10) {
+            Text(keyJSON)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Theme.textSoft)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Theme.surface1)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .shadow(color: Theme.shadowAmbient, radius: 1, y: 0.5)
+
+            Text(name)
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+
+            if isPrimary { Text("primary").pillBadge(.neutral) }
+            if isUnique  { Text("unique").pillBadge(.warning) }
+            if isSparse  { Text("sparse").pillBadge(.info) }
+
+            Spacer()
+
+            if !isPrimary {
+                Button {
+                    dropIndexName = name
+                    showDropIndexAlert = true
+                } label: {
+                    Text("Drop")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(Theme.danger)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+            if !isLast {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+            }
+        }
+    }
+
+    // MARK: - Card / table chrome
+
+    @ViewBuilder
+    private func investCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 0, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surface1)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .shadow(color: Theme.shadowAmbient, radius: 6, y: 2)
+    }
+
+    @ViewBuilder
+    private func sectionHead<Trailing: View>(title: String, sub: String, @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text(sub)
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            trailing()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func tableHeader(_ cols: [(String, HorizontalAlignment, CGFloat?)]) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
+                let (label, align, width) = c
+                Text(label)
+                    .sectionHeaderStyle()
+                    .frame(maxWidth: width.map { _ in nil } ?? .infinity,
+                           alignment: align == .trailing ? .trailing : .leading)
+                    .frame(width: width, alignment: align == .trailing ? .trailing : .leading)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Theme.surface2)
+    }
+
+    @ViewBuilder
+    private func tableRow<Content: View>(tint: Color?, @ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(tint ?? Color.clear)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+            }
+    }
+
+    private func emptyRow(message: String) -> some View {
+        Text(message)
+            .font(.system(size: 12))
+            .foregroundStyle(Theme.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
+    }
+
+    // MARK: - Sheets
 
     private var explainSheet: some View {
         VStack(spacing: 16) {
             HStack {
-                Text("Query Explain Plan")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-                Spacer()
-                Button("Done") {
-                    showExplainSheet = false
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Query Explain plan")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Detailed execution path for the active filter")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textSecondary)
                 }
-                .buttonStyle(.accent)
+                Spacer()
+                Button("Done") { showExplainSheet = false }
+                    .buttonStyle(.accent)
             }
 
             if let result = explainResult {
                 ScrollView {
                     Text(prettyPrintJSON(result))
                         .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.codeFg)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(Theme.midnight)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
+                .padding(14)
+                .background(Theme.codeBg)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
-                Text("No explain results available")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.textSecondary)
+                Text("No explain results.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            Button {
-                if let result = explainResult {
-                    let json = prettyPrintJSON(result)
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(json, forType: .string)
+            HStack {
+                Spacer()
+                Button {
+                    if let result = explainResult {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(prettyPrintJSON(result), forType: .string)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc")
+                        Text("Copy")
+                    }
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "doc.on.doc")
-                    Text("Copy to Clipboard")
-                }
+                .buttonStyle(.ghost)
             }
-            .buttonStyle(.ghost)
         }
         .padding(20)
-        .frame(width: 700, height: 500)
-        .background(Theme.surface)
+        .frame(width: 720, height: 520)
+        .background(Theme.surface0)
     }
 
-    // MARK: - Helpers
+    private var createIndexSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Create index")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer()
+                Button("Cancel") { showCreateIndexSheet = false }
+                    .buttonStyle(.ghost)
+            }
 
-    private func executionTimeColor(_ ms: Int) -> Color {
-        if ms < 50 { return Theme.green }
-        if ms < 200 { return Theme.amber }
-        return Theme.crimson
-    }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Index keys (JSON)").sectionHeaderStyle()
+                TextField("{\"field\": 1}", text: $indexKeysJSON)
+                    .textFieldStyle(.themed)
+            }
 
-    private func profilingLevelColor(_ level: Int) -> Color {
-        switch level {
-        case 0: return Theme.textSecondary
-        case 1: return Theme.amber
-        case 2: return Theme.crimson
-        default: return Theme.textSecondary
+            HStack(spacing: 18) {
+                Toggle("Unique", isOn: $indexUnique).toggleStyle(.checkbox)
+                Toggle("Sparse", isOn: $indexSparse).toggleStyle(.checkbox)
+                Spacer()
+            }
+
+            HStack {
+                Spacer()
+                Button {
+                    createIndexFromInput()
+                    showCreateIndexSheet = false
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                        Text("Create index")
+                    }
+                }
+                .buttonStyle(.accent)
+            }
         }
+        .padding(20)
+        .frame(width: 480)
+        .background(Theme.surface0)
+    }
+
+    // MARK: - Polling & helpers
+
+    private func restartPolling() {
+        refreshTask?.cancel()
+        guard let seconds = refreshInterval.seconds else { return }
+        refreshTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                if Task.isCancelled { break }
+                await refreshAll()
+            }
+        }
+    }
+
+    private func refreshAll() async {
+        await viewModel.refreshMetrics()
+        await viewModel.fetchSlowQueries()
+        if viewModel.activeTab.selectedCollection != nil {
+            await viewModel.fetchIndexes()
+        }
+        lastRefreshAt = .now
+    }
+
+    private func createIndexFromInput() {
+        guard let data = indexKeysJSON.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+        var fields: [String: Int] = [:]
+        for (key, value) in parsed {
+            if let intVal = value as? Int { fields[key] = intVal }
+            else if let numVal = value as? NSNumber { fields[key] = numVal.intValue }
+        }
+        guard !fields.isEmpty else { return }
+        Task {
+            await viewModel.createIndex(fields: fields, unique: indexUnique, sparse: indexSparse)
+        }
+    }
+
+    private func exportReport() {
+        reportDocument = InvestigateReportDocument.snapshot(from: viewModel)
+        isExportingReport = true
+    }
+
+    private func queryPreview(_ command: String) -> String {
+        let trimmed = command
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        if trimmed.count <= 90 { return trimmed }
+        return String(trimmed.prefix(88)) + "…"
     }
 
     private func formatKeyPattern(_ dict: [String: Any]) -> String {
@@ -648,25 +1109,90 @@ struct InvestigateView: View {
         return "{}"
     }
 
-    private func createIndexFromInput() {
-        guard let data = indexKeysJSON.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return
-        }
+    private func formatDuration(_ ms: Int) -> String {
+        if ms >= 1000 { return String(format: "%.2fs", Double(ms) / 1000) }
+        return "\(ms)ms"
+    }
 
-        var fields: [String: Int] = [:]
-        for (key, value) in parsed {
-            if let intVal = value as? Int {
-                fields[key] = intVal
-            } else if let numVal = value as? NSNumber {
-                fields[key] = numVal.intValue
+    private func formatElapsed(_ seconds: TimeInterval) -> String {
+        if seconds < 60 { return String(format: "%.1fs", seconds) }
+        let m = Int(seconds) / 60
+        let s = Int(seconds) % 60
+        return "\(m)m \(s)s"
+    }
+
+    private static let exportFilenameFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f
+    }()
+}
+
+// MARK: - Investigate report (JSON snapshot)
+
+/// Wraps current ops, slow queries, and index recommendations into a JSON
+/// document suitable for `fileExporter`. Empty by default so the view's
+/// initial state has something to bind to.
+struct InvestigateReportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+
+    let data: Data
+
+    static let empty = InvestigateReportDocument(data: Data("{}".utf8))
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        self.data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+
+    @MainActor
+    static func snapshot(from viewModel: AppViewModel) -> InvestigateReportDocument {
+        let payload: [String: Any] = [
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "connection": viewModel.connectionName,
+            "currentOps": viewModel.currentOps.map { op -> [String: Any] in
+                return [
+                    "id": op.id,
+                    "op": op.op,
+                    "namespace": op.namespace,
+                    "client": op.client,
+                    "executionTimeMs": op.executionTimeMs,
+                    "readLocks": op.readLocks,
+                    "writeLocks": op.writeLocks,
+                    "description": op.description
+                ]
+            },
+            "slowQueries": viewModel.slowQueries.map { q -> [String: Any] in
+                return [
+                    "operation": q.operation,
+                    "namespace": q.namespace,
+                    "command": q.command,
+                    "planSummary": q.planSummary,
+                    "executionTimeMs": q.executionTimeMs,
+                    "meanMs": q.meanMs,
+                    "p99Ms": q.p99Ms,
+                    "count": q.count,
+                    "lastSeen": ISO8601DateFormatter().string(from: q.lastSeen),
+                    "keysExamined": q.keysExamined,
+                    "docsExamined": q.docsExamined
+                ]
+            },
+            "indexRecommendations": viewModel.indexRecommendations.map { r -> [String: Any] in
+                return [
+                    "namespace": r.namespace,
+                    "indexJSON": r.indexJSON,
+                    "impact": r.impact.rawValue,
+                    "rationale": r.rationale
+                ]
             }
-        }
-
-        guard !fields.isEmpty else { return }
-
-        Task {
-            await viewModel.createIndex(fields: fields, unique: indexUnique, sparse: indexSparse)
-        }
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]))
+            ?? Data("{}".utf8)
+        return InvestigateReportDocument(data: data)
     }
 }

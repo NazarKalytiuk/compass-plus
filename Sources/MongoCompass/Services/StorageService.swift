@@ -9,6 +9,9 @@ final class StorageService {
         static let queryLog = "query_log"
         static let savedQueries = "saved_queries_v1"
         static let savedPipelines = "saved_pipelines_v1"
+        static let savedCommands = "saved_commands_v1"
+        static let schemaSnapshotPrefix = "schema_snapshot_v1."
+        static let dumpPresets = "dump_presets_v1"
     }
 
     private static let maxConnections = 10
@@ -119,6 +122,39 @@ final class StorageService {
         encode(list, forKey: Keys.savedPipelines)
     }
 
+    // MARK: - Saved Shell Commands
+
+    func loadSavedCommands() -> [SavedCommand] {
+        return decode([SavedCommand].self, forKey: Keys.savedCommands)
+    }
+
+    func saveCommand(_ command: SavedCommand) {
+        var list = loadSavedCommands()
+        if let index = list.firstIndex(where: { $0.id == command.id }) {
+            list[index] = command
+        } else {
+            list.insert(command, at: 0)
+        }
+        encode(list, forKey: Keys.savedCommands)
+    }
+
+    func removeCommand(id: UUID) {
+        var list = loadSavedCommands()
+        list.removeAll { $0.id == id }
+        encode(list, forKey: Keys.savedCommands)
+    }
+
+    func updateCommandLastUsed(id: UUID, at date: Date = Date()) {
+        var list = loadSavedCommands()
+        guard let index = list.firstIndex(where: { $0.id == id }) else { return }
+        list[index].lastUsedAt = date
+        // Move most-recently-used to the top so the drawer reads as a
+        // recency-sorted list without per-call sorting on the read side.
+        let updated = list.remove(at: index)
+        list.insert(updated, at: 0)
+        encode(list, forKey: Keys.savedCommands)
+    }
+
     // MARK: - Import / Export Connections
 
     func exportConnections(to url: URL) throws {
@@ -139,6 +175,42 @@ final class StorageService {
             current = Array(current.prefix(Self.maxConnections))
         }
         saveConnections(current)
+    }
+
+    // MARK: - Dump presets
+
+    func loadDumpPresets() -> [DumpPreset] {
+        return decode([DumpPreset].self, forKey: Keys.dumpPresets)
+    }
+
+    func saveDumpPreset(_ preset: DumpPreset) {
+        var list = loadDumpPresets()
+        list.removeAll { $0.id == preset.id }
+        list.insert(preset, at: 0)
+        encode(list, forKey: Keys.dumpPresets)
+    }
+
+    func removeDumpPreset(id: UUID) {
+        var list = loadDumpPresets()
+        list.removeAll { $0.id == id }
+        encode(list, forKey: Keys.dumpPresets)
+    }
+
+    // MARK: - Schema snapshot (per database.collection)
+
+    /// Persist the flat list of field paths from the most recent sample so
+    /// the next analyze pass can compute an added/removed delta.
+    func saveSchemaSnapshot(_ paths: [String], for namespace: String) {
+        let key = Keys.schemaSnapshotPrefix + namespace
+        if let data = try? JSONEncoder().encode(paths) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    func loadSchemaSnapshot(for namespace: String) -> [String]? {
+        let key = Keys.schemaSnapshotPrefix + namespace
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode([String].self, from: data)
     }
 
     // MARK: - Private Encode/Decode Helpers

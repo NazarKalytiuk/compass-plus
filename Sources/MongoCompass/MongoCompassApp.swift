@@ -11,7 +11,7 @@ struct MongoCompassApp: App {
             RootView()
                 .environment(appViewModel)
                 .frame(minWidth: 1200, minHeight: 800)
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(.light)
         }
         .commands {
             CommandGroup(after: .newItem) {
@@ -52,6 +52,6 @@ struct RootView: View {
                 ConnectView()
             }
         }
-        .background(Theme.midnight)
+        .background(Theme.canvas)
     }
 }
