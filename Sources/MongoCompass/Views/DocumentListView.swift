@@ -32,8 +32,32 @@ struct DocumentListView: View {
     @State private var importFormat: ImportFormat = .jsonArray
     @State private var importExportError: String?
 
-    @State private var hoveredRowIndex: Int?
+    /// Tracks which document cards are currently expanded (KV tree visible).
+    /// Default is expanded: an empty set means "all open". The user collapses
+    /// individual cards via the chevron. Performance of the expanded default
+    /// is acceptable because `cachedDocRows` keeps the per-document
+    /// `JSONSerialization` work off the body hot path.
     @State private var collapsedDocs: Set<String> = []
+
+    /// Cached pretty-printed JSON lines for the JSON view mode.
+    /// `prettyPrintJSONArray` runs `JSONSerialization` over the whole document
+    /// array, which is expensive on large pages — recomputing it on every
+    /// hover/re-render would block the main thread. We only recompute when the
+    /// document signature changes (count + ids of the first few docs).
+    @State private var cachedJsonLines: [String] = []
+    @State private var cachedJsonSignature: Int = 0
+    @State private var cachedJsonFullText: String = ""
+
+    /// Cached `DocRow` array, recomputed only when `viewModel.documentsRevision`
+    /// changes. `stableDocRows(from:)` runs `JSONSerialization` over every
+    /// visible document to compute `approximateSize` — this used to re-run on
+    /// every body-pass (i.e. every keystroke in a filter field). Caching keeps
+    /// it strictly on document-set changes.
+    @State private var cachedDocRows: [DocRow] = []
+    @State private var cachedDocRowsRevision: Int = -1
+
+    @State private var rowSyncTask: Task<Void, Never>?
+    @State private var jsonSyncTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,6 +68,18 @@ struct DocumentListView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.surface0)
+        // Cache invalidation is driven exclusively by `documentsRevision` so
+        // that per-keystroke body re-renders (filter / sort / projection
+        // editing) do not trigger the per-document JSONSerialization work
+        // inside `stableDocRows(from:)`.
+        .onAppear { syncDocRowsCacheIfNeeded() }
+        .onChange(of: viewModel.documentsRevision) { _, _ in
+            syncDocRowsCacheIfNeeded()
+            // A fresh document set means stale ids would point at rows that
+            // no longer exist. Resetting the collapsed set keeps cards
+            // expanded-by-default on every refresh / page change.
+            collapsedDocs.removeAll()
+        }
         .sheet(isPresented: $showInsertSheet) {
             DocumentEditorView(mode: .insert)
         }
@@ -319,6 +355,19 @@ struct DocumentListView: View {
             noCollectionView
         } else if viewModel.documents.isEmpty {
             emptyStateView
+        } else if viewMode == .json {
+            // JSON mode owns its own ScrollView + LazyVStack so individual
+            // JSON lines are lazily realized. Wrapping it in the outer
+            // LazyVStack would only lazy-realize the whole block as one item.
+            JsonLinesView(
+                lines: cachedJsonLines,
+                fullText: cachedJsonFullText
+            )
+            .background(Theme.surface0)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { refreshJsonCacheIfNeeded() }
+            .onChange(of: viewModel.documents.count) { _, _ in refreshJsonCacheIfNeeded(force: true) }
+            .onChange(of: jsonCacheSignature) { _, _ in refreshJsonCacheIfNeeded(force: true) }
         } else {
             ScrollView(.vertical, showsIndicators: true) {
                 // Pinned section headers make the table-mode column row sticky.
@@ -335,6 +384,62 @@ struct DocumentListView: View {
             }
             .background(Theme.surface0)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Lightweight invalidation key for the JSON cache. We can't compare
+    /// `[[String: Any]]` directly, so combine doc count with the hashed ids
+    /// of the first few docs as a cheap "did the visible set change" check.
+    private var jsonCacheSignature: Int {
+        var hasher = Hasher()
+        hasher.combine(viewModel.documents.count)
+        for doc in viewModel.documents.prefix(3) {
+            hasher.combine(extractDocumentId(doc))
+        }
+        return hasher.finalize()
+    }
+
+    private func refreshJsonCacheIfNeeded(force: Bool = false) {
+        let sig = jsonCacheSignature
+        if !force && sig == cachedJsonSignature && !cachedJsonLines.isEmpty { return }
+
+        let wrapper = SendableDocs(docs: viewModel.documents)
+        jsonSyncTask?.cancel()
+        jsonSyncTask = Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                let text = prettyPrintJSONArray(wrapper.docs)
+                return (text, text.components(separatedBy: "\n"))
+            }.value
+
+            if !Task.isCancelled {
+                cachedJsonFullText = result.0
+                cachedJsonLines = result.1
+                cachedJsonSignature = sig
+            }
+        }
+    }
+
+    /// Recompute `cachedDocRows` only when `documentsRevision` has advanced
+    /// since the last sync. Called from `onAppear` and `onChange` on the
+    /// docs area — never from `body`. This is the single allowed caller of
+    /// `stableDocRows(from:)`, keeping per-keystroke body-passes free of
+    /// the per-document `JSONSerialization` work done there.
+    private func syncDocRowsCacheIfNeeded() {
+        if cachedDocRowsRevision == viewModel.documentsRevision { return }
+        
+        let wrapper = SendableDocs(docs: viewModel.documents)
+        let rev = viewModel.documentsRevision
+        
+        rowSyncTask?.cancel()
+        rowSyncTask = Task {
+            let newRows = await Task.detached(priority: .userInitiated) {
+                return Self.stableDocRows(from: wrapper.docs)
+            }.value
+            
+            if !Task.isCancelled {
+                cachedDocRows = newRows
+                cachedDocRowsRevision = rev
+            }
         }
     }
 
@@ -374,339 +479,53 @@ struct DocumentListView: View {
     private var documentList: some View {
         switch viewMode {
         case .tree:
-            ForEach(Array(viewModel.documents.enumerated()), id: \.offset) { index, doc in
-                treeDocumentCard(doc: doc, index: index)
+            ForEach(cachedDocRows) { row in
+                DocCardView(
+                    revision: cachedDocRowsRevision,
+                    row: row,
+                    isOpen: !collapsedDocs.contains(row.docId),
+                    hasIndexes: !viewModel.indexes.isEmpty,
+                    onToggleCollapse: {
+                        if collapsedDocs.contains(row.docId) {
+                            collapsedDocs.remove(row.docId)
+                        } else {
+                            collapsedDocs.insert(row.docId)
+                        }
+                    },
+                    onEdit: {
+                        editingDocument = row.doc
+                        showEditSheet = true
+                    },
+                    onDelete: {
+                        deleteDocumentId = row.docId
+                        showDeleteAlert = true
+                    },
+                    onCopy: {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(prettyPrintJSON(row.doc), forType: .string)
+                    }
+                )
+                .equatable()
             }
         case .table:
             tableView
         case .json:
-            jsonModeBody
+            // JSON mode is rendered directly by `docsArea` via `JsonLinesView`
+            // so it can own its own ScrollView + LazyVStack. This branch is
+            // unreachable but kept for switch exhaustiveness.
+            EmptyView()
         }
     }
 
-    // MARK: - JSON mode (single bulk-rendered block with line-number gutter)
 
-    private var jsonModeBody: some View {
-        let json = prettyPrintJSONArray(viewModel.documents)
-        let lines = json.components(separatedBy: "\n")
-        let gutterWidth: CGFloat = max(28, CGFloat(String(lines.count).count) * 9 + 12)
 
-        return HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .trailing, spacing: 1) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { idx, _ in
-                    Text("\(idx + 1)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Theme.codeMuted)
-                }
-            }
-            .frame(width: gutterWidth, alignment: .trailing)
-            .padding(.vertical, 12)
-            .padding(.trailing, 10)
-            .background(Theme.codeBg)
-
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    colorizedJSONLine(line)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(.vertical, 12)
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.codeBg)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Theme.hairline, lineWidth: 1)
-        )
-        .shadow(color: Theme.shadowAmbient, radius: 6, y: 2)
-        .contextMenu {
-            Button("Copy all") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(json, forType: .string)
-            }
-        }
-    }
-
-    // MARK: - Tree document card
-
-    private func treeDocumentCard(doc: [String: Any], index: Int) -> some View {
-        let docId = extractDocumentId(doc)
-        let isHovered = hoveredRowIndex == index
-        let isOpen = !collapsedDocs.contains(docId)
-        let statusPills = detectStatusPills(in: doc)
-        let bytes = approximateSize(of: doc)
-        let fieldCount = doc.keys.count
-
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 8) {
-                Button {
-                    if isOpen { collapsedDocs.insert(docId) } else { collapsedDocs.remove(docId) }
-                } label: {
-                    Image(systemName: isOpen ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Theme.textMuted)
-                        .frame(width: 18, height: 20)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                VStack(alignment: .leading, spacing: isOpen ? 8 : 0) {
-                    HStack(spacing: 8) {
-                        Text("_id : \(docId)")
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(Theme.surface3)
-                            .foregroundStyle(Theme.textSoft)
-                            .clipShape(Capsule())
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-
-                        ForEach(statusPills) { pill in
-                            Text(pill.label).pillBadge(pill.kind)
-                        }
-
-                        Text("\(fieldCount) field\(fieldCount == 1 ? "" : "s") · \(formatBytes(bytes)) · \(viewModel.indexes.isEmpty ? "no index" : "indexed")")
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .foregroundStyle(Theme.textMuted)
-
-                        Spacer(minLength: 0)
-
-                        rowActions(doc: doc, docId: docId)
-                            .opacity(isHovered ? 1 : 0)
-                    }
-
-                    if isOpen {
-                        kvTree(doc)
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 12)
-        }
-        .background(Theme.surface1)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .shadow(color: Theme.shadowAmbient.opacity(isHovered ? 1.0 : 0.7),
-                radius: isHovered ? 10 : 6,
-                y: isHovered ? 3 : 2)
-        .onHover { hovering in
-            hoveredRowIndex = hovering ? index : (hoveredRowIndex == index ? nil : hoveredRowIndex)
-        }
-        .contextMenu {
-            Button("Edit") { editingDocument = doc; showEditSheet = true }
-            Button("Copy JSON") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(prettyPrintJSON(doc), forType: .string)
-            }
-            Button("Delete", role: .destructive) {
-                deleteDocumentId = docId; showDeleteAlert = true
-            }
-        }
-    }
-
-    private func rowActions(doc: [String: Any], docId: String) -> some View {
-        HStack(spacing: 2) {
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(prettyPrintJSON(doc), forType: .string)
-            } label: {
-                Image(systemName: "doc.on.doc")
-                    .toolbarIconButton()
-            }
-            .buttonStyle(.plain)
-            .help("Copy JSON")
-
-            Button {
-                editingDocument = doc
-                showEditSheet = true
-            } label: {
-                Image(systemName: "pencil")
-                    .toolbarIconButton()
-            }
-            .buttonStyle(.plain)
-            .help("Edit")
-
-            Button {
-                deleteDocumentId = docId
-                showDeleteAlert = true
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.danger)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Delete")
-        }
-    }
-
-    // MARK: - KV tree
-
-    private func kvTree(_ doc: [String: Any], indent: Int = 0) -> AnyView {
-        let ordered = orderedDocKeys(Array(doc.keys))
-        return AnyView(
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(ordered, id: \.self) { key in
-                    kvRow(key: key, value: doc[key] as Any, indent: indent)
-                }
-            }
-        )
-    }
-
-    private func kvRow(key: String, value: Any, indent: Int) -> AnyView {
-        AnyView(
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text("\"\(key)\"")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color(red: 0.122, green: 0.302, blue: 0.549))
-                    .frame(width: 200, alignment: .leading)
-
-                kvValue(value, atIndent: indent)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        )
-    }
-
-    private func kvValue(_ value: Any, atIndent indent: Int) -> AnyView {
-        AnyView(_kvValueContent(value, atIndent: indent))
-    }
-
-    @ViewBuilder
-    private func _kvValueContent(_ value: Any, atIndent indent: Int) -> some View {
-        switch value {
-        case let s as String:
-            HStack(spacing: 6) {
-                Text("\"\(s)\"")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.successDeep)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                typeTag("string")
-            }
-        case let n as NSNumber where !isBool(n):
-            HStack(spacing: 6) {
-                Text(formatNumber(n))
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.warningDeep)
-                typeTag(n.stringValue.contains(".") ? "double" : "int32")
-            }
-        case let b as Bool:
-            HStack(spacing: 6) {
-                Text(b ? "true" : "false")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.violetDeep)
-                typeTag("bool")
-            }
-        case let dict as [String: Any]:
-            if indent >= 1 {
-                Text("{ \(dict.keys.count) field\(dict.keys.count == 1 ? "" : "s") }")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.textMuted)
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("{ \(dict.keys.count) field\(dict.keys.count == 1 ? "" : "s") }")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Theme.textMuted)
-                    nestedBlock {
-                        kvTree(dict, indent: indent + 1)
-                    }
-                }
-            }
-        case let arr as [Any]:
-            if indent >= 1 {
-                Text("[ \(arr.count) item\(arr.count == 1 ? "" : "s") ]")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.textMuted)
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("[ \(arr.count) item\(arr.count == 1 ? "" : "s") ]")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Theme.textMuted)
-                    nestedBlock {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ForEach(Array(arr.enumerated()), id: \.offset) { idx, item in
-                                kvRow(key: "\(idx)", value: item, indent: indent + 1)
-                            }
-                        }
-                    }
-                }
-            }
-        case is NSNull:
-            HStack(spacing: 6) {
-                Text("null")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.textMuted)
-            }
-        default:
-            let raw = stringValue(value)
-            if raw.hasPrefix("20") && raw.count > 8, raw.contains("T") || raw.contains("-") {
-                // ISO-like date string
-                HStack(spacing: 0) {
-                    Text("ISODate(").foregroundStyle(Theme.violetDeep)
-                    Text("\"\(raw)\"").foregroundStyle(Theme.successDeep)
-                    Text(")").foregroundStyle(Theme.violetDeep)
-                }
-                .font(.system(size: 12, design: .monospaced))
-            } else {
-                Text(raw)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Theme.textSoft)
-            }
-        }
-    }
-
-    private func nestedBlock<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 0) {
-            Rectangle()
-                .fill(Theme.hairline)
-                .frame(width: 1)
-                .padding(.leading, 6)
-                .padding(.vertical, 2)
-            content()
-                .padding(.leading, 12)
-        }
-    }
-
-    private func typeTag(_ text: String) -> some View {
-        Text(text.uppercased())
-            .font(.system(size: 9.5, weight: .semibold))
-            .tracking(0.7)
-            .foregroundStyle(Theme.textMuted)
-    }
-
-    // MARK: - JSON document card (full prettyprinted code surface)
-
-    private func jsonDocumentCard(doc: [String: Any], index: Int) -> some View {
-        let docId = extractDocumentId(doc)
-        let json = prettyPrintJSON(doc)
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("_id : \(docId)")
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(Theme.surface3)
-                    .foregroundStyle(Theme.textSoft)
-                    .clipShape(Capsule())
-
-                Spacer()
-
-                rowActions(doc: doc, docId: docId)
-            }
-
-            syntaxHighlightedJSON(json)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .codeSurface(padding: 12, cornerRadius: 8)
-        }
-        .padding(14)
-        .background(Theme.surface1)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .shadow(color: Theme.shadowAmbient, radius: 6, y: 2)
-    }
+    // MARK: - JSON mode
+    //
+    // `JsonLinesView` (defined at file scope) owns its own ScrollView + a
+    // LazyVStack of pre-split lines, so each line is realized lazily as the
+    // user scrolls. The lines themselves are cached on the parent view in
+    // `cachedJsonLines` so we don't run `JSONSerialization` over the whole
+    // document set on every render.
 
     // MARK: - Table view
 
@@ -716,9 +535,30 @@ struct DocumentListView: View {
         let displayKeys = orderedTableKeys(from: allKeys)
 
         Section {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(viewModel.documents.enumerated()), id: \.offset) { index, doc in
-                    tableRow(doc: doc, index: index, displayKeys: displayKeys)
+            // LazyVStack so table rows realize as the user scrolls instead of
+            // building all rows eagerly. The outer scroll container is the
+            // ScrollView in `docsArea` which already declares `pinnedViews:
+            // [.sectionHeaders]`, so this `Section`'s header still sticks.
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(cachedDocRows) { row in
+                    TableRowView(
+                        revision: cachedDocRowsRevision,
+                        row: row,
+                        displayKeys: displayKeys,
+                        onEdit: {
+                            editingDocument = row.doc
+                            showEditSheet = true
+                        },
+                        onDelete: {
+                            deleteDocumentId = row.docId
+                            showDeleteAlert = true
+                        },
+                        onCopy: {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(prettyPrintJSON(row.doc), forType: .string)
+                        }
+                    )
+                    .equatable()
                 }
             }
             .padding(.horizontal, 12)
@@ -740,7 +580,7 @@ struct DocumentListView: View {
                 ForEach(displayKeys, id: \.self) { key in
                     Text(key == "_id" ? "_ID" : key)
                         .sectionHeaderStyle()
-                        .frame(minWidth: minWidth(for: key), alignment: .leading)
+                        .frame(minWidth: tableMinWidth(for: key), alignment: .leading)
                         .padding(.horizontal, 10)
                 }
                 Spacer(minLength: 0)
@@ -760,138 +600,6 @@ struct DocumentListView: View {
         }
     }
 
-    private func tableRow(doc: [String: Any], index: Int, displayKeys: [String]) -> some View {
-        let isHovered = hoveredRowIndex == index
-        let docId = extractDocumentId(doc)
-
-        return HStack(spacing: 0) {
-            Color.clear.frame(width: 28)
-            ForEach(displayKeys, id: \.self) { key in
-                tableCell(key: key, value: doc[key])
-                    .frame(minWidth: minWidth(for: key), alignment: .leading)
-                    .padding(.horizontal, 10)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 12)
-        .background(
-            ZStack(alignment: .leading) {
-                Rectangle()
-                    .fill(isHovered ? Theme.primaryTint : Color.clear)
-                if isHovered {
-                    Rectangle().fill(Theme.primary).frame(width: 3)
-                }
-            }
-        )
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            hoveredRowIndex = hovering ? index : (hoveredRowIndex == index ? nil : hoveredRowIndex)
-        }
-        .contextMenu {
-            Button("Edit") { editingDocument = doc; showEditSheet = true }
-            Button("Copy JSON") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(prettyPrintJSON(doc), forType: .string)
-            }
-            Button("Delete", role: .destructive) {
-                deleteDocumentId = docId; showDeleteAlert = true
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func tableCell(key: String, value: Any?) -> some View {
-        if key == "_id" {
-            Text(stringValue(value))
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Theme.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        } else if key.lowercased() == "status" {
-            statusPill(for: stringValue(value))
-        } else if isDateLike(key: key, value: value) {
-            Text(formatDateLike(stringValue(value)))
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Theme.textSecondary)
-                .lineLimit(1)
-        } else {
-            tableValueCell(value)
-        }
-    }
-
-    @ViewBuilder
-    private func tableValueCell(_ value: Any?) -> some View {
-        switch value {
-        case nil, is NSNull:
-            Text("null")
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Theme.textMuted)
-                .italic()
-                .lineLimit(1)
-        case let n as NSNumber where isBool(n):
-            Text(n.boolValue ? "true" : "false").pillBadge(.violet)
-        case let b as Bool:
-            Text(b ? "true" : "false").pillBadge(.violet)
-        case let n as NSNumber:
-            Text(formatNumber(n))
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Theme.warningDeep)
-                .lineLimit(1)
-        case let s as String:
-            Text(s)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Theme.successDeep)
-                .lineLimit(1)
-                .truncationMode(.tail)
-        case let dict as [String: Any]:
-            Text("{ \(dict.keys.count) field\(dict.keys.count == 1 ? "" : "s") }")
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Theme.textMuted)
-                .lineLimit(1)
-        case let arr as [Any]:
-            Text("[ \(arr.count) item\(arr.count == 1 ? "" : "s") ]")
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Theme.textMuted)
-                .lineLimit(1)
-        default:
-            Text(stringValue(value))
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(1)
-        }
-    }
-
-    private func statusPill(for raw: String) -> some View {
-        let normalized = raw.uppercased()
-        let kind: BadgeKind
-        switch normalized {
-        case "ACTIVE", "TRUE", "ENABLED", "SUCCESS", "OK", "ONLINE":
-            kind = .success
-        case "PENDING", "WAITING", "PROCESSING":
-            kind = .warning
-        case "INACTIVE", "DISABLED", "ERROR", "FAILED", "FALSE", "OFFLINE":
-            kind = .danger
-        case "INFO", "DRAFT":
-            kind = .info
-        default:
-            kind = .neutral
-        }
-        return Text(normalized.isEmpty ? "—" : normalized).pillBadge(kind)
-    }
-
-    private func minWidth(for key: String) -> CGFloat {
-        switch key.lowercased() {
-        case "_id":    return 140
-        case "status": return 100
-        case "email":  return 200
-        case "name":   return 160
-        default:
-            let l = key.lowercased()
-            if l.contains("date") || l.contains("at") || l.contains("time") { return 140 }
-            return 140
-        }
-    }
-
     private func orderedTableKeys(from keys: [String]) -> [String] {
         let priority = ["_id", "name", "email", "createdAt", "created_at", "created", "updatedAt", "updated_at", "status"]
         var ordered: [String] = []
@@ -905,16 +613,6 @@ struct DocumentListView: View {
             ordered.append(k); seen.insert(k)
         }
         return ordered
-    }
-
-    private func isDateLike(key: String, value: Any?) -> Bool {
-        let lower = key.lowercased()
-        return lower.contains("date") || lower.contains("_at") || lower.contains("time") || lower == "created" || lower == "updated"
-    }
-
-    private func formatDateLike(_ s: String) -> String {
-        if let tIdx = s.firstIndex(of: "T") { return String(s[s.startIndex..<tIdx]) }
-        return s
     }
 
     // MARK: - Pagination
@@ -1189,91 +887,6 @@ struct DocumentListView: View {
         .background(Theme.surface0)
     }
 
-    // MARK: - Syntax highlighted JSON (used by JSON view mode)
-
-    private func syntaxHighlightedJSON(_ json: String) -> some View {
-        let lines = json.components(separatedBy: "\n")
-        return VStack(alignment: .leading, spacing: 1) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                colorizedJSONLine(line)
-            }
-        }
-    }
-
-    private func colorizedJSONLine(_ line: String) -> some View {
-        var parts: [(String, Color)] = []
-        var remaining = line[line.startIndex...]
-
-        while !remaining.isEmpty {
-            if let quoteStart = remaining.firstIndex(of: "\"") {
-                if quoteStart > remaining.startIndex {
-                    parts.append((String(remaining[remaining.startIndex..<quoteStart]), Theme.codeFg))
-                }
-                let afterQuote = remaining.index(after: quoteStart)
-                if afterQuote < remaining.endIndex,
-                   let closeQuote = remaining[afterQuote...].firstIndex(of: "\"") {
-                    let content = String(remaining[quoteStart...closeQuote])
-                    let afterClose = remaining.index(after: closeQuote)
-                    let restAfterClose = remaining[afterClose...]
-                    let trimmed = restAfterClose.drop(while: { $0 == " " })
-                    if trimmed.first == ":" {
-                        parts.append((content, Theme.codeKey))
-                    } else {
-                        parts.append((content, Theme.codeString))
-                    }
-                    remaining = remaining[afterClose...]
-                } else {
-                    parts.append((String(remaining), Theme.codeFg))
-                    remaining = remaining[remaining.endIndex...]
-                }
-            } else {
-                let text = String(remaining)
-                parts.append(contentsOf: colorizeNonStringTokens(text))
-                remaining = remaining[remaining.endIndex...]
-            }
-        }
-
-        return HStack(spacing: 0) {
-            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
-                Text(part.0)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(part.1)
-            }
-        }
-    }
-
-    private func colorizeNonStringTokens(_ text: String) -> [(String, Color)] {
-        var results: [(String, Color)] = []
-        let scanner = text as NSString
-        let pattern = #"(true|false|null|(\-?\d+\.?\d*([eE][+-]?\d+)?))"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return [(text, Theme.codeFg)]
-        }
-
-        var lastEnd = 0
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: scanner.length))
-        for match in matches {
-            if match.range.location > lastEnd {
-                let prefix = scanner.substring(with: NSRange(location: lastEnd, length: match.range.location - lastEnd))
-                results.append((prefix, Theme.codeFg))
-            }
-            let matched = scanner.substring(with: match.range)
-            if matched == "true" || matched == "false" {
-                results.append((matched, Theme.codeBool))
-            } else if matched == "null" {
-                results.append((matched, Theme.codeMuted))
-            } else {
-                results.append((matched, Theme.codeNumber))
-            }
-            lastEnd = match.range.location + match.range.length
-        }
-        if lastEnd < scanner.length {
-            let suffix = scanner.substring(from: lastEnd)
-            results.append((suffix, Theme.codeFg))
-        }
-        return results
-    }
-
     // MARK: - Helpers
 
     private func collectAllKeys() -> [String] {
@@ -1286,46 +899,11 @@ struct DocumentListView: View {
         return sorted
     }
 
-    private func orderedDocKeys(_ keys: [String]) -> [String] {
-        let priority = ["_id", "email", "name", "tier", "status", "createdAt", "updatedAt", "lastLoginAt"]
-        var ordered: [String] = []
-        var seen = Set<String>()
-        for p in priority {
-            if let match = keys.first(where: { $0.lowercased() == p.lowercased() }), !seen.contains(match) {
-                ordered.append(match); seen.insert(match)
-            }
-        }
-        for k in keys where !seen.contains(k) {
-            ordered.append(k); seen.insert(k)
-        }
-        return ordered
+    nonisolated private static func orderedDocKeys(_ keys: [String]) -> [String] {
+        kvOrderedDocKeys(keys)
     }
 
-    private func handleImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            Task {
-                do {
-                    try await viewModel.importDocuments(format: importFormat, from: url)
-                } catch {
-                    importExportError = "Import failed: \(error.localizedDescription)"
-                }
-            }
-        case .failure(let error):
-            importExportError = "Import failed: \(error.localizedDescription)"
-        }
-    }
-
-    // MARK: - Auto-detected status pills for tree card head row
-
-    private struct DetectedPill: Identifiable {
-        let id = UUID()
-        let label: String
-        let kind: BadgeKind
-    }
-
-    private func detectStatusPills(in doc: [String: Any]) -> [DetectedPill] {
+    nonisolated private static func detectStatusPills(in doc: [String: Any]) -> [DetectedPill] {
         var out: [DetectedPill] = []
         if let tier = doc["tier"] as? String {
             out.append(DetectedPill(label: "tier · \(tier)", kind: .accent))
@@ -1347,7 +925,7 @@ struct DocumentListView: View {
         if let verified = doc["verified"] as? Bool, !verified, out.count < 3 {
             out.append(DetectedPill(label: "2FA pending", kind: .warning))
         }
-        if out.count < 3, isFutureDate(doc["trialEndsAt"]) {
+        if out.count < 3, Self.isFutureDate(doc["trialEndsAt"]) {
             out.append(DetectedPill(label: "trialing", kind: .info))
         }
         return out
@@ -1355,7 +933,7 @@ struct DocumentListView: View {
 
     /// Treat ISO-8601 strings and `Date` values uniformly. Returns true iff
     /// the value parses to a moment later than now (i.e. an active trial).
-    private func isFutureDate(_ value: Any?) -> Bool {
+    nonisolated private static func isFutureDate(_ value: Any?) -> Bool {
         guard let value else { return false }
         let now = Date()
         if let date = value as? Date {
@@ -1371,29 +949,723 @@ struct DocumentListView: View {
         return false
     }
 
-    private func approximateSize(of doc: [String: Any]) -> Int {
+    nonisolated private static func approximateSize(of doc: [String: Any]) -> Int {
         guard let data = try? JSONSerialization.data(withJSONObject: doc, options: []) else { return 0 }
         return data.count
     }
 
-    private func formatBytes(_ bytes: Int) -> String {
-        if bytes < 1024 { return "\(bytes) B" }
-        let kb = Double(bytes) / 1024
-        if kb < 1024 { return String(format: "%.1f KB", kb) }
-        let mb = kb / 1024
-        return String(format: "%.1f MB", mb)
-    }
-
-    private func isBool(_ n: NSNumber) -> Bool {
-        return CFGetTypeID(n) == CFBooleanGetTypeID()
-    }
-
-    private func formatNumber(_ n: NSNumber) -> String {
-        let s = n.stringValue
-        if let intVal = Int(s), abs(intVal) >= 1000 {
-            return intVal.formatted()
+    /// Build stable, Identifiable rows keyed by the document's `_id` so SwiftUI
+    /// can diff individual rows on hover/refresh instead of rebuilding the
+    /// entire `LazyVStack`. When two documents collide on extracted id (e.g.
+    /// both fall back to "unknown"), only the colliding rows are suffixed
+    /// with `#<index>` to keep ids unique without disturbing the stable ones.
+    nonisolated private static func stableDocRows(from documents: [[String: Any]]) -> [DocRow] {
+        var seen: [String: Int] = [:]
+        var rows: [DocRow] = []
+        rows.reserveCapacity(documents.count)
+        for (index, doc) in documents.enumerated() {
+            let raw = extractDocumentId(doc)
+            let count = (seen[raw] ?? 0) + 1
+            seen[raw] = count
+            let id = count == 1 ? raw : "\(raw)#\(index)"
+            // Precompute the expensive bits exactly once per (re)load of the
+            // document set. These would otherwise re-run on every hover/page
+            // re-render inside `DocCardView`.
+            let bytes = Self.approximateSize(of: doc)
+            let pills = Self.detectStatusPills(in: doc)
+            let orderedKeys = Self.orderedDocKeys(Array(doc.keys))
+            rows.append(
+                DocRow(
+                    id: id,
+                    index: index,
+                    doc: doc,
+                    docId: raw,
+                    bytes: bytes,
+                    fieldCount: doc.keys.count,
+                    pills: pills,
+                    orderedKeys: orderedKeys
+                )
+            )
         }
-        return s
+        // If a key appeared more than once, the first occurrence kept the raw
+        // id while later ones were suffixed. Suffix the first occurrence too,
+        // so ids are uniformly disambiguated and don't silently shift.
+        let duplicates = Set(seen.compactMap { $0.value > 1 ? $0.key : nil })
+        if !duplicates.isEmpty {
+            for i in rows.indices where duplicates.contains(rows[i].docId) && rows[i].id == rows[i].docId {
+                let existing = rows[i]
+                rows[i] = DocRow(
+                    id: "\(existing.id)#\(existing.index)",
+                    index: existing.index,
+                    doc: existing.doc,
+                    docId: existing.docId,
+                    bytes: existing.bytes,
+                    fieldCount: existing.fieldCount,
+                    pills: existing.pills,
+                    orderedKeys: existing.orderedKeys
+                )
+            }
+        }
+        return rows
+    }
+
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            Task {
+                do {
+                    try await viewModel.importDocuments(format: importFormat, from: url)
+                } catch {
+                    importExportError = "Import failed: \(error.localizedDescription)"
+                }
+            }
+        case .failure(let error):
+            importExportError = "Import failed: \(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - KV tree views (file-private, struct-based to preserve SwiftUI diffing)
+
+/// Recursive key/value tree renderer for a single BSON document.
+///
+/// `orderedKeys` lets the top-level call skip re-sorting keys on every
+/// re-render — the caller (a `DocRow`) has already cached them. Nested
+/// invocations from `KVValueView` pass `nil` and fall back to computing the
+/// ordering on the fly, which is the same cost as before.
+///
+/// These three views replace the previous `AnyView`-wrapped helper methods on
+/// `DocumentListView`. `AnyView` type-erases the body and blocks SwiftUI's
+/// structural diff, which made every keystroke / hover redraw the entire tree.
+/// Concrete `struct: View` types restore diffing, while a recursive type
+/// (`KVValueView` references `KVTreeView` and `KVRowView`) handles the nested
+/// dict/array branches.
+fileprivate struct KVTreeView: View {
+    let doc: [String: Any]
+    let indent: Int
+    let orderedKeys: [String]?
+
+    var body: some View {
+        let ordered = orderedKeys ?? kvOrderedDocKeys(Array(doc.keys))
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(ordered, id: \.self) { key in
+                KVRowView(key: key, value: doc[key] as Any, indent: indent)
+            }
+        }
+    }
+}
+
+fileprivate struct KVRowView: View {
+    let key: String
+    let value: Any
+    let indent: Int
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("\"\(key)\"")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Color(red: 0.122, green: 0.302, blue: 0.549))
+                .frame(width: 200, alignment: .leading)
+
+            KVValueView(value: value, indent: indent)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+fileprivate struct KVValueView: View {
+    let value: Any
+    let indent: Int
+
+    @ViewBuilder
+    var body: some View {
+        // Case order matches the original `_kvValueContent` exactly: NSNumber
+        // (non-Bool) is matched before `Bool` because `Bool` bridges to
+        // NSNumber and would otherwise be swallowed by the NSNumber case.
+        switch value {
+        case let s as String:
+            HStack(spacing: 6) {
+                Text("\"\(s)\"")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.successDeep)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                KVTypeTag("string")
+            }
+        case let n as NSNumber where !kvIsBool(n):
+            HStack(spacing: 6) {
+                Text(kvFormatNumber(n))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.warningDeep)
+                KVTypeTag(n.stringValue.contains(".") ? "double" : "int32")
+            }
+        case let b as Bool:
+            HStack(spacing: 6) {
+                Text(b ? "true" : "false")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.violetDeep)
+                KVTypeTag("bool")
+            }
+        case let dict as [String: Any]:
+            if indent >= 1 {
+                Text("{ \(dict.keys.count) field\(dict.keys.count == 1 ? "" : "s") }")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("{ \(dict.keys.count) field\(dict.keys.count == 1 ? "" : "s") }")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Theme.textMuted)
+                    KVNestedBlock {
+                        KVTreeView(doc: dict, indent: indent + 1, orderedKeys: nil)
+                    }
+                }
+            }
+        case let arr as [Any]:
+            if indent >= 1 {
+                Text("[ \(arr.count) item\(arr.count == 1 ? "" : "s") ]")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("[ \(arr.count) item\(arr.count == 1 ? "" : "s") ]")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Theme.textMuted)
+                    KVNestedBlock {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(arr.enumerated()), id: \.offset) { idx, item in
+                                KVRowView(key: "\(idx)", value: item, indent: indent + 1)
+                            }
+                        }
+                    }
+                }
+            }
+        case is NSNull:
+            HStack(spacing: 6) {
+                Text("null")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
+            }
+        default:
+            let raw = stringValue(value)
+            if raw.hasPrefix("20") && raw.count > 8, raw.contains("T") || raw.contains("-") {
+                // ISO-like date string
+                HStack(spacing: 0) {
+                    Text("ISODate(").foregroundStyle(Theme.violetDeep)
+                    Text("\"\(raw)\"").foregroundStyle(Theme.successDeep)
+                    Text(")").foregroundStyle(Theme.violetDeep)
+                }
+                .font(.system(size: 12, design: .monospaced))
+            } else {
+                Text(raw)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Theme.textSoft)
+            }
+        }
+    }
+}
+
+fileprivate struct KVNestedBlock<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(width: 1)
+                .padding(.leading, 6)
+                .padding(.vertical, 2)
+            content()
+                .padding(.leading, 12)
+        }
+    }
+}
+
+fileprivate struct KVTypeTag: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(.system(size: 9.5, weight: .semibold))
+            .tracking(0.7)
+            .foregroundStyle(Theme.textMuted)
+    }
+}
+
+// MARK: - Row views (file-private, own hover state)
+
+/// Tree-mode document card with **locally** owned hover state.
+///
+/// Previously the parent `DocumentListView` held a single `hoveredRowIndex`
+/// shared across all rows, and each row mutated it via `.onHover`. That
+/// invalidated the entire parent body on every cursor move — scrolling a
+/// 10-item page produced a flurry of full-list rebuilds and pushed CPU to
+/// ~70%. Owning `isHovered` here keeps invalidation to a single row.
+///
+/// The hover affordance is also intentionally **cheap**: a solid 1pt stroke
+/// overlay instead of a GPU-blurred shadow whose radius/opacity changed on
+/// hover. The card's drop shadow is now static.
+fileprivate struct DocCardView: View, Equatable {
+    let revision: Int
+    let row: DocRow
+    let isOpen: Bool
+    let hasIndexes: Bool
+    let onToggleCollapse: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+    let onCopy: () -> Void
+
+    @State private var isHovered = false
+
+    static func == (lhs: DocCardView, rhs: DocCardView) -> Bool {
+        lhs.row.id == rhs.row.id && lhs.isOpen == rhs.isOpen && lhs.hasIndexes == rhs.hasIndexes && lhs.revision == rhs.revision
+    }
+
+    var body: some View {
+        let doc = row.doc
+        let docId = row.docId
+        let statusPills = row.pills
+        let bytes = row.bytes
+        let fieldCount = row.fieldCount
+
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 8) {
+                Button(action: onToggleCollapse) {
+                    Image(systemName: isOpen ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.textMuted)
+                        .frame(width: 18, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: isOpen ? 8 : 0) {
+                    HStack(spacing: 8) {
+                        Text("_id : \(docId)")
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Theme.surface3)
+                            .foregroundStyle(Theme.textSoft)
+                            .clipShape(Capsule())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        ForEach(statusPills) { pill in
+                            Text(pill.label).pillBadge(pill.kind)
+                        }
+
+                        Text("\(fieldCount) field\(fieldCount == 1 ? "" : "s") · \(docCardFormatBytes(bytes)) · \(hasIndexes ? "indexed" : "no index")")
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundStyle(Theme.textMuted)
+
+                        Spacer(minLength: 0)
+
+                        HStack(spacing: 2) {
+                            Button(action: onCopy) {
+                                Image(systemName: "doc.on.doc")
+                                    .toolbarIconButton()
+                            }
+                            .buttonStyle(.plain)
+                            .help("Copy JSON")
+
+                            Button(action: onEdit) {
+                                Image(systemName: "pencil")
+                                    .toolbarIconButton()
+                            }
+                            .buttonStyle(.plain)
+                            .help("Edit")
+
+                            Button(action: onDelete) {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.danger)
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Delete")
+                        }
+                        .opacity(isHovered ? 1 : 0)
+                    }
+
+                    if isOpen {
+                        KVTreeView(doc: doc, indent: 0, orderedKeys: row.orderedKeys)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
+        }
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Theme.surface1)
+                    .shadow(color: Theme.shadowAmbient.opacity(0.7), radius: 6, y: 2)
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Theme.primaryTint.opacity(isHovered ? 0.08 : 0))
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Theme.primary.opacity(isHovered ? 0.9 : 0), lineWidth: 1.5)
+        )
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .contextMenu {
+            Button("Edit", action: onEdit)
+            Button("Copy JSON", action: onCopy)
+            Button("Delete", role: .destructive, action: onDelete)
+        }
+    }
+}
+
+/// Table-mode row with locally owned hover state. Same rationale as
+/// `DocCardView`: avoid invalidating the parent on every hover. Visuals are
+/// preserved — solid tint background + 3pt accent stripe on hover.
+fileprivate struct TableRowView: View, Equatable {
+    let revision: Int
+    let row: DocRow
+    let displayKeys: [String]
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+    let onCopy: () -> Void
+
+    @State private var isHovered = false
+
+    static func == (lhs: TableRowView, rhs: TableRowView) -> Bool {
+        lhs.row.id == rhs.row.id && lhs.displayKeys == rhs.displayKeys && lhs.revision == rhs.revision
+    }
+
+    var body: some View {
+        let doc = row.doc
+
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 28)
+            ForEach(displayKeys, id: \.self) { key in
+                tableCell(key: key, value: doc[key])
+                    .frame(minWidth: tableMinWidth(for: key), alignment: .leading)
+                    .padding(.horizontal, 10)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 12)
+        .background(
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(isHovered ? Theme.primaryTint : Color.clear)
+                if isHovered {
+                    Rectangle().fill(Theme.primary).frame(width: 3)
+                }
+            }
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .contextMenu {
+            Button("Edit", action: onEdit)
+            Button("Copy JSON", action: onCopy)
+            Button("Delete", role: .destructive, action: onDelete)
+        }
+    }
+}
+
+// MARK: - Row cell helpers (file-private, shared by `TableRowView` /
+// `DocCardView`)
+
+@ViewBuilder
+fileprivate func tableCell(key: String, value: Any?) -> some View {
+    if key == "_id" {
+        Text(stringValue(value))
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(Theme.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    } else if key.lowercased() == "status" {
+        statusPill(for: stringValue(value))
+    } else if isDateLike(key: key, value: value) {
+        Text(formatDateLike(stringValue(value)))
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(Theme.textSecondary)
+            .lineLimit(1)
+    } else {
+        tableValueCell(value)
+    }
+}
+
+@ViewBuilder
+fileprivate func tableValueCell(_ value: Any?) -> some View {
+    switch value {
+    case nil, is NSNull:
+        Text("null")
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(Theme.textMuted)
+            .italic()
+            .lineLimit(1)
+    case let n as NSNumber where kvIsBool(n):
+        Text(n.boolValue ? "true" : "false").pillBadge(.violet)
+    case let b as Bool:
+        Text(b ? "true" : "false").pillBadge(.violet)
+    case let n as NSNumber:
+        Text(kvFormatNumber(n))
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(Theme.warningDeep)
+            .lineLimit(1)
+    case let s as String:
+        Text(s)
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(Theme.successDeep)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    case let dict as [String: Any]:
+        Text("{ \(dict.keys.count) field\(dict.keys.count == 1 ? "" : "s") }")
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(Theme.textMuted)
+            .lineLimit(1)
+    case let arr as [Any]:
+        Text("[ \(arr.count) item\(arr.count == 1 ? "" : "s") ]")
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(Theme.textMuted)
+            .lineLimit(1)
+    default:
+        Text(stringValue(value))
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(Theme.textPrimary)
+            .lineLimit(1)
+    }
+}
+
+fileprivate func statusPill(for raw: String) -> some View {
+    let normalized = raw.uppercased()
+    let kind: BadgeKind
+    switch normalized {
+    case "ACTIVE", "TRUE", "ENABLED", "SUCCESS", "OK", "ONLINE":
+        kind = .success
+    case "PENDING", "WAITING", "PROCESSING":
+        kind = .warning
+    case "INACTIVE", "DISABLED", "ERROR", "FAILED", "FALSE", "OFFLINE":
+        kind = .danger
+    case "INFO", "DRAFT":
+        kind = .info
+    default:
+        kind = .neutral
+    }
+    return Text(normalized.isEmpty ? "—" : normalized).pillBadge(kind)
+}
+
+fileprivate func tableMinWidth(for key: String) -> CGFloat {
+    switch key.lowercased() {
+    case "_id":    return 140
+    case "status": return 100
+    case "email":  return 200
+    case "name":   return 160
+    default:
+        let l = key.lowercased()
+        if l.contains("date") || l.contains("at") || l.contains("time") { return 140 }
+        return 140
+    }
+}
+
+fileprivate func isDateLike(key: String, value: Any?) -> Bool {
+    let lower = key.lowercased()
+    return lower.contains("date") || lower.contains("_at") || lower.contains("time") || lower == "created" || lower == "updated"
+}
+
+fileprivate func formatDateLike(_ s: String) -> String {
+    if let tIdx = s.firstIndex(of: "T") { return String(s[s.startIndex..<tIdx]) }
+    return s
+}
+
+/// Byte-count formatter used by `DocCardView`'s header line. Same logic as
+/// the parent's `formatBytes(_:)` but file-private so the new struct can
+/// reach it without going through the view model.
+fileprivate func docCardFormatBytes(_ bytes: Int) -> String {
+    if bytes < 1024 { return "\(bytes) B" }
+    let kb = Double(bytes) / 1024
+    if kb < 1024 { return String(format: "%.1f KB", kb) }
+    let mb = kb / 1024
+    return String(format: "%.1f MB", mb)
+}
+
+// MARK: - KV tree helpers (file-private, shared with `DocumentListView`)
+
+fileprivate func kvOrderedDocKeys(_ keys: [String]) -> [String] {
+    let priority = ["_id", "email", "name", "tier", "status", "createdAt", "updatedAt", "lastLoginAt"]
+    var ordered: [String] = []
+    var seen = Set<String>()
+    for p in priority {
+        if let match = keys.first(where: { $0.lowercased() == p.lowercased() }), !seen.contains(match) {
+            ordered.append(match); seen.insert(match)
+        }
+    }
+    for k in keys where !seen.contains(k) {
+        ordered.append(k); seen.insert(k)
+    }
+    return ordered
+}
+
+fileprivate func kvIsBool(_ n: NSNumber) -> Bool {
+    CFGetTypeID(n) == CFBooleanGetTypeID()
+}
+
+fileprivate func kvFormatNumber(_ n: NSNumber) -> String {
+    let s = n.stringValue
+    if let intVal = Int(s), abs(intVal) >= 1000 {
+        return intVal.formatted()
+    }
+    return s
+}
+
+// MARK: - JSON colorizer (file-private, shared with JsonLinesView)
+
+/// Pattern for JSON literal/number tokens. Compiled exactly once at module
+/// load. Previously this was re-compiled inside `colorizeNonStringTokens`
+/// for every JSON line — on a 100-document page that meant tens of
+/// thousands of needless `NSRegularExpression` initializations.
+/// `try!` is safe because the pattern is a known-good literal.
+fileprivate let jsonNonStringTokenRegex: NSRegularExpression = {
+    // swiftlint:disable:next force_try
+    try! NSRegularExpression(pattern: #"(true|false|null|(\-?\d+\.?\d*([eE][+-]?\d+)?))"#)
+}()
+
+fileprivate func jsonColorizeNonStringTokens(_ text: String) -> [(String, Color)] {
+    var results: [(String, Color)] = []
+    let scanner = text as NSString
+    let regex = jsonNonStringTokenRegex
+
+    var lastEnd = 0
+    let matches = regex.matches(in: text, range: NSRange(location: 0, length: scanner.length))
+    for match in matches {
+        if match.range.location > lastEnd {
+            let prefix = scanner.substring(with: NSRange(location: lastEnd, length: match.range.location - lastEnd))
+            results.append((prefix, Theme.codeFg))
+        }
+        let matched = scanner.substring(with: match.range)
+        if matched == "true" || matched == "false" {
+            results.append((matched, Theme.codeBool))
+        } else if matched == "null" {
+            results.append((matched, Theme.codeMuted))
+        } else {
+            results.append((matched, Theme.codeNumber))
+        }
+        lastEnd = match.range.location + match.range.length
+    }
+    if lastEnd < scanner.length {
+        let suffix = scanner.substring(from: lastEnd)
+        results.append((suffix, Theme.codeFg))
+    }
+    return results
+}
+
+/// Render a single JSON line with key/string/number/literal colors. Pure
+/// view factory — no view-model state — so it can be called from any view
+/// in this file (currently `DocumentListView` and `JsonLinesView`).
+@ViewBuilder
+fileprivate func renderColorizedJSONLine(_ line: String) -> some View {
+    let parts = colorizeJSONLineParts(line)
+    HStack(spacing: 0) {
+        ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+            Text(part.0)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(part.1)
+        }
+    }
+}
+
+fileprivate func colorizeJSONLineParts(_ line: String) -> [(String, Color)] {
+    var parts: [(String, Color)] = []
+    var remaining = line[line.startIndex...]
+
+    while !remaining.isEmpty {
+        if let quoteStart = remaining.firstIndex(of: "\"") {
+            if quoteStart > remaining.startIndex {
+                parts.append((String(remaining[remaining.startIndex..<quoteStart]), Theme.codeFg))
+            }
+            let afterQuote = remaining.index(after: quoteStart)
+            if afterQuote < remaining.endIndex,
+               let closeQuote = remaining[afterQuote...].firstIndex(of: "\"") {
+                let content = String(remaining[quoteStart...closeQuote])
+                let afterClose = remaining.index(after: closeQuote)
+                let restAfterClose = remaining[afterClose...]
+                let trimmed = restAfterClose.drop(while: { $0 == " " })
+                if trimmed.first == ":" {
+                    parts.append((content, Theme.codeKey))
+                } else {
+                    parts.append((content, Theme.codeString))
+                }
+                remaining = remaining[afterClose...]
+            } else {
+                parts.append((String(remaining), Theme.codeFg))
+                remaining = remaining[remaining.endIndex...]
+            }
+        } else {
+            let text = String(remaining)
+            parts.append(contentsOf: jsonColorizeNonStringTokens(text))
+            remaining = remaining[remaining.endIndex...]
+        }
+    }
+    return parts
+}
+
+// MARK: - JSON lines view (own ScrollView + LazyVStack)
+
+/// Renders a pretty-printed JSON document array as a code surface with a
+/// line-number gutter. Crucially this view owns its own ScrollView and
+/// LazyVStack so individual lines are realized as the user scrolls — a
+/// 100-document page can produce many thousands of lines, and the old
+/// implementation built every `Text` eagerly. Lines are also passed in
+/// pre-split by the parent so we don't run `JSONSerialization` over the
+/// whole document set on every re-render.
+fileprivate struct JsonLinesView: View {
+    let lines: [String]
+    /// Full raw text, used solely by the context-menu "Copy all" action so
+    /// we don't have to re-join the lines on every render.
+    let fullText: String
+
+    var body: some View {
+        let lineCount = lines.count
+        let gutterWidth: CGFloat = max(28, CGFloat(String(lineCount).count) * 9 + 12)
+
+        return ScrollView(.vertical, showsIndicators: true) {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(0..<lines.count, id: \.self) { idx in
+                    HStack(alignment: .top, spacing: 0) {
+                        Text("\(idx + 1)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Theme.codeMuted)
+                            .frame(width: gutterWidth, alignment: .trailing)
+                            .padding(.trailing, 10)
+
+                        renderColorizedJSONLine(lines[idx])
+                            .padding(.horizontal, 12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.codeBg)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Theme.hairline, lineWidth: 1)
+            )
+            .shadow(color: Theme.shadowAmbient, radius: 6, y: 2)
+            .contextMenu {
+                Button("Copy all") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(fullText, forType: .string)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
     }
 }
 
@@ -1485,6 +1757,41 @@ struct DocumentsExportDocument: FileDocument {
     }
 }
 
+// MARK: - Stable identifier row wrapper
+
+/// Auto-detected pill rendered next to the `_id` capsule on a tree card's
+/// header line. Kept at file scope so `DocRow` can carry a precomputed list
+/// without re-deriving it on every SwiftUI render.
+fileprivate struct DetectedPill: Identifiable {
+    let id = UUID()
+    let label: String
+    let kind: BadgeKind
+}
+
+/// Identifiable pairing of (stableId, originalIndex, doc) so SwiftUI's
+/// `ForEach` can diff document cards by `_id` rather than positional offset.
+/// The `index` is preserved for any future keyboard navigation logic that
+/// needs to address rows by position.
+///
+/// In addition to the raw document, this row carries a small bundle of
+/// precomputed metadata (`bytes`, `pills`, `orderedKeys`, …) so the per-row
+/// hot path in `DocCardView` / `TableRowView` does not re-run
+/// `JSONSerialization`, key inspection, or pill detection on every hover /
+/// page change / re-layout.
+fileprivate struct DocRow: Identifiable {
+    let id: String
+    let index: Int
+    let doc: [String: Any]
+    /// "Clean" `_id` for display — `id` may carry a `#<index>` suffix when
+    /// extraction collides across documents, but this field always reflects
+    /// the document's own identifier.
+    let docId: String
+    let bytes: Int
+    let fieldCount: Int
+    let pills: [DetectedPill]
+    let orderedKeys: [String]
+}
+
 // MARK: - Free helpers (shared)
 
 func prettyPrintJSON(_ dict: [String: Any]) -> String {
@@ -1532,4 +1839,8 @@ func stringValue(_ value: Any?) -> String {
     default:
         return "\(value)"
     }
+}
+
+fileprivate struct SendableDocs: @unchecked Sendable {
+    let docs: [[String: Any]]
 }

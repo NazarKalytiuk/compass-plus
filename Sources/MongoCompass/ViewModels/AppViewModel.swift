@@ -45,6 +45,12 @@ class AppViewModel {
     // MARK: - Documents (for current tab's explorer)
 
     var documents: [[String: Any]] = []
+    /// Monotonic revision counter. Incremented whenever `documents` is
+    /// reassigned (refresh / clear / disconnect). Views observe this token
+    /// instead of `documents` itself to cheaply detect "new set arrived"
+    /// without diffing the array. Wraps on overflow (&+=) which is fine —
+    /// any change makes the value differ from the cached snapshot.
+    var documentsRevision: Int = 0
     var documentCount: Int = 0
     var isLoading = false
     var error: String?
@@ -150,6 +156,15 @@ class AppViewModel {
         stopMetricsPolling()
         mongoService.disconnect()
 
+        // Drop any in-flight count/explain so they can't update state
+        // post-disconnect, and clear the cache so the next session
+        // doesn't reuse a key from the previous one.
+        pendingCountTask?.cancel()
+        pendingExplainTask?.cancel()
+        pendingCountTask = nil
+        pendingExplainTask = nil
+        lastCountKey = nil
+
         isConnected = false
         connectionName = ""
         connectionURI = ""
@@ -157,6 +172,7 @@ class AppViewModel {
         expandedDatabases = []
         collections = [:]
         documents = []
+        documentsRevision &+= 1
         documentCount = 0
         error = nil
         connectionError = nil
@@ -219,6 +235,7 @@ class AppViewModel {
         activeTab.selectedCollection = nil
         activeTab.skip = 0
         documents = []
+        documentsRevision &+= 1
         documentCount = 0
         await loadCollections(for: database)
     }
@@ -254,6 +271,7 @@ class AppViewModel {
                 activeTab.selectedDatabase = nil
                 activeTab.selectedCollection = nil
                 documents = []
+                documentsRevision &+= 1
                 documentCount = 0
             }
         } catch {
@@ -278,6 +296,7 @@ class AppViewModel {
             if activeTab.selectedDatabase == db && activeTab.selectedCollection == name {
                 activeTab.selectedCollection = nil
                 documents = []
+                documentsRevision &+= 1
                 documentCount = 0
             }
         } catch {
@@ -287,11 +306,43 @@ class AppViewModel {
 
     // MARK: - Documents (Explorer)
 
+    /// Cache key for the document count. The count depends on
+    /// (database, collection, filter) — NOT on skip/limit/sort/projection
+    /// — so pagination within the same filter reuses the cached value
+    /// instead of re-running an expensive `count` command on the server.
+    private struct CountCacheKey: Equatable {
+        let database: String
+        let collection: String
+        let filter: String  // normalized: empty string == "{}"
+    }
+    private var lastCountKey: CountCacheKey?
+    private var pendingCountTask: Task<Void, Never>?
+    private var pendingExplainTask: Task<Void, Never>?
+
+    /// Force the next `refreshDocuments` to re-run `count` even when the
+    /// (database, collection, filter) tuple has not changed. Used after
+    /// insert/delete on the active collection, where document count is
+    /// known to have shifted by ±1.
+    private func invalidateDocumentCountCache() {
+        lastCountKey = nil
+    }
+
     func refreshDocuments() async {
+        // Cancel any in-flight count/explain from a previous refresh. The
+        // user may be flipping pages faster than the server can answer
+        // these auxiliary requests; stale answers must not overwrite
+        // fresh state.
+        pendingCountTask?.cancel()
+        pendingExplainTask?.cancel()
+        pendingCountTask = nil
+        pendingExplainTask = nil
+
         guard let database = activeTab.selectedDatabase,
               let collection = activeTab.selectedCollection else {
             documents = []
+            documentsRevision &+= 1
             documentCount = 0
+            lastCountKey = nil
             return
         }
 
@@ -299,12 +350,11 @@ class AppViewModel {
         error = nil
 
         let startTime = Date()
+        let filterStr = activeTab.filter.isEmpty ? nil : activeTab.filter
+        let sortStr = activeTab.sort.isEmpty ? nil : activeTab.sort
+        let projStr = activeTab.projection.isEmpty ? nil : activeTab.projection
 
         do {
-            let filterStr = activeTab.filter.isEmpty ? nil : activeTab.filter
-            let sortStr = activeTab.sort.isEmpty ? nil : activeTab.sort
-            let projStr = activeTab.projection.isEmpty ? nil : activeTab.projection
-
             let results = try await mongoService.getDocuments(
                 database: database,
                 collection: collection,
@@ -315,33 +365,23 @@ class AppViewModel {
                 limit: activeTab.limit
             )
 
+            // Release the UI as soon as we have visible documents — count
+            // and explain are auxiliary signals and finish off the main path.
             documents = results
-
-            // Get document count using collStats command
-            let countResult = try await mongoService.runCommand(
-                database: database,
-                command: ["count": collection, "query": MongoService.parseJSON(filterStr) as Any]
-            )
-            if let n = countResult["n"] as? Int {
-                documentCount = n
-            } else {
-                documentCount = results.count
-            }
+            documentsRevision &+= 1
+            isLoading = false
 
             let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
+            let key = CountCacheKey(
+                database: database,
+                collection: collection,
+                filter: filterStr ?? "{}"
+            )
 
-            // Best-effort explain so slow queries surface plan + docsExamined
-            // in the log. Falls back silently if explain isn't permitted on
-            // this connection or the server omits executionStats.
-            var plan: String?
-            var examined: Int?
-            if let explain = try? await mongoService.explainFind(
-                database: database, collection: collection, filter: filterStr
-            ) {
-                plan = Self.extractWinningStage(from: explain)
-                examined = Self.extractExamined(from: explain)
-            }
-
+            // Log the find immediately, regardless of whether count/explain
+            // will run. docsExamined/plan stay nil on the synchronous log
+            // entry — slow queries are still surfaced by execution time and
+            // by the dedicated Investigate view's profiler reads.
             let logEntry = QueryLogEntry(
                 operationType: .find,
                 database: database,
@@ -349,15 +389,54 @@ class AppViewModel {
                 query: filterStr ?? "{}",
                 executionTimeMs: executionTimeMs,
                 docsReturned: results.count,
-                docsExamined: examined,
-                plan: plan,
+                docsExamined: nil,
+                plan: nil,
                 client: "compass+"
             )
             logQuery(logEntry)
+
+            if lastCountKey == key {
+                // Pure pagination within the same filter/db/collection —
+                // documentCount is already accurate, no server round-trips.
+                return
+            }
+
+            // Cache-miss: filter/db/collection changed. Show the page-local
+            // count as an immediate fallback so the pagination bar isn't
+            // stale, then refine in the background.
+            documentCount = results.count
+            lastCountKey = key
+
+            pendingCountTask = Task { [weak self] in
+                guard let self else { return }
+                let countResult = try? await self.mongoService.runCommand(
+                    database: database,
+                    command: ["count": collection, "query": MongoService.parseJSON(filterStr) as Any]
+                )
+                if Task.isCancelled { return }
+                if let n = countResult?["n"] as? Int {
+                    self.documentCount = n
+                }
+            }
+
+            pendingExplainTask = Task { [weak self] in
+                guard let self else { return }
+                let explain = try? await self.mongoService.explainFind(
+                    database: database, collection: collection, filter: filterStr
+                )
+                if Task.isCancelled { return }
+                _ = explain
+                // Plan/docsExamined are intentionally not back-patched onto
+                // the already-written log entry — keeping the log write
+                // single-shot is simpler and the lost detail is recoverable
+                // via the Investigate view.
+            }
         } catch {
             self.error = error.localizedDescription
             documents = []
+            documentsRevision &+= 1
             documentCount = 0
+            lastCountKey = nil
             let executionTimeMs = Int(Date().timeIntervalSince(startTime) * 1000)
             let filterStr = activeTab.filter.isEmpty ? "{}" : activeTab.filter
             let logEntry = QueryLogEntry(
@@ -371,9 +450,8 @@ class AppViewModel {
                 errorMessage: error.localizedDescription
             )
             logQuery(logEntry)
+            isLoading = false
         }
-
-        isLoading = false
     }
 
     /// Walk the `queryPlanner.winningPlan` tree and return the outermost
@@ -423,6 +501,7 @@ class AppViewModel {
             logQuery(logEntry)
 
             _ = inserted
+            invalidateDocumentCountCache()
             await refreshDocuments()
         } catch {
             self.error = error.localizedDescription
@@ -517,6 +596,7 @@ class AppViewModel {
             )
             logQuery(logEntry)
 
+            invalidateDocumentCountCache()
             await refreshDocuments()
         } catch {
             self.error = error.localizedDescription
