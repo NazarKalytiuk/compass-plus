@@ -26,5 +26,19 @@
     <true/>
     <key>NSSupportsAutomaticTermination</key>
     <true/>
+
+    <!-- Sparkle auto-update -->
+    <key>SUFeedURL</key>
+    <string>https://nazarkalytiuk.github.io/compass-plus/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>CmD1mLJmBxX3o7/6El/9VLcRMFbHwNowvmFTbClmiss=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <true/>
 </dict>
 </plist>

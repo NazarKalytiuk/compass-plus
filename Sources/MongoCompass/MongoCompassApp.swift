@@ -4,6 +4,7 @@ import AppKit
 @main
 struct MongoCompassApp: App {
     @State private var appViewModel = AppViewModel()
+    @StateObject private var updateService = UpdateService()
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
@@ -24,6 +25,14 @@ struct MongoCompassApp: App {
                     appViewModel.closeCurrentTab()
                 }
                 .keyboardShortcut("w", modifiers: .command)
+            }
+
+            // Standard macOS placement: app menu, right after "About".
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updateService.checkForUpdates()
+                }
+                .disabled(!updateService.canCheckForUpdates)
             }
         }
     }

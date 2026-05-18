@@ -64,6 +64,39 @@ jobs:
           shasum -a 256 MongoCompass.dmg MongoCompass.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      # ----- Sparkle: sign the ZIP with the EdDSA private key (GitHub Secret).
+      # We sign BEFORE creating the GitHub release so the workflow fails fast
+      # if the secret is missing. Publishing the appcast happens AFTER the
+      # release exists so the ZIP enclosure URL is reachable.
+
+      - name: Download Sparkle tools
+        run: |
+          SPARKLE_VERSION=2.9.2
+          mkdir -p .sparkle
+          curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz" \
+            | tar xJ -C .sparkle
+          .sparkle/bin/sign_update --help >/dev/null
+
+      - name: Sign update ZIP
+        id: sign
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [[ -z "${SPARKLE_ED_PRIVATE_KEY}" ]]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY secret is not set. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "${SPARKLE_ED_PRIVATE_KEY}" > .sparkle/ed_priv.key
+          OUT=$(.sparkle/bin/sign_update -f .sparkle/ed_priv.key .dist/MongoCompass.zip)
+          rm -f .sparkle/ed_priv.key
+          echo "${OUT}"
+          # `OUT` looks like: sparkle:edSignature="..." length="..."
+          SIG=$(echo "${OUT}" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
+          LEN=$(echo "${OUT}" | sed -E 's/.*length="([0-9]+)".*/\1/')
+          echo "signature=${SIG}" >> "$GITHUB_OUTPUT"
+          echo "length=${LEN}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -85,9 +118,59 @@ jobs:
             2. Unzip — move **MongoCompass.app** wherever you like
             3. First launch: right-click → **Open**
 
+            ### Auto-update
+            Future versions auto-update through the app menu: **Compass+ → Check for Updates…**
+
             ### Checksums
             SHA-256 checksums are in `SHA256SUMS.txt`.
           files: |
             .dist/MongoCompass.dmg
             .dist/MongoCompass.zip
             .dist/SHA256SUMS.txt
+
+      - name: Append entry to appcast.xml on gh-pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SIG: ${{ steps.sign.outputs.signature }}
+          LEN: ${{ steps.sign.outputs.length }}
+        run: |
+          set -euo pipefail
+          PUBDATE=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
+          ZIP_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/MongoCompass.zip"
+          REL_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+
+          # Pull the GitHub-generated release body so Sparkle's dialog can
+          # surface real release notes instead of a placeholder.
+          BODY=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.body' 2>/dev/null || echo "")
+          if [[ -z "${BODY}" ]]; then
+            BODY="Release ${TAG}"
+          fi
+
+          mkdir -p pages
+          git clone --depth 1 --branch gh-pages \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" pages
+
+          python3 Scripts/update-appcast.py \
+            --appcast pages/appcast.xml \
+            --version "${VERSION}" \
+            --short-version "${VERSION}" \
+            --pub-date "${PUBDATE}" \
+            --url "${ZIP_URL}" \
+            --release-url "${REL_URL}" \
+            --length "${LEN}" \
+            --signature "${SIG}" \
+            --description "${BODY}" \
+            --min-system-version 14.0
+
+          cd pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          if git diff --cached --quiet; then
+            echo "No appcast changes — skipping commit."
+          else
+            git commit -m "Release ${TAG}: append to appcast"
+            git push origin gh-pages
+          fi
