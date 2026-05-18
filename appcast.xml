@@ -7,6 +7,40 @@
         <link>https://nazarkalytiuk.github.io/compass-plus/appcast.xml</link>
         <description>Compass+ — native macOS MongoDB GUI updates feed.</description>
         <language>en</language>
+        <item>
+            <title>Version 0.5.0</title>
+            <link>https://github.com/NazarKalytiuk/compass-plus/releases/tag/v0.5.0</link>
+            <sparkle:version>0.5.0</sparkle:version>
+            <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <pubDate>Mon, 18 May 2026 15:52:58 +0000</pubDate>
+            <description><![CDATA[
+                ## Install
+
+### DMG (recommended)
+1. Download **MongoCompass.dmg**
+2. Open it and drag **MongoCompass.app** to **Applications**
+3. First launch: right-click the app → **Open** → **Open** (ad-hoc signed, not notarized)
+
+### ZIP
+1. Download **MongoCompass.zip**
+2. Unzip — move **MongoCompass.app** wherever you like
+3. First launch: right-click → **Open**
+
+### Auto-update
+Future versions auto-update through the app menu: **Compass+ → Check for Updates…**
+
+### Checksums
+SHA-256 checksums are in `SHA256SUMS.txt`.
+
+
+**Full Changelog**: https://github.com/NazarKalytiuk/compass-plus/compare/v0.4.0...v0.5.0
+            ]]></description>
+            <enclosure url="https://github.com/NazarKalytiuk/compass-plus/releases/download/v0.5.0/MongoCompass.zip"
+                       length="8321986"
+                       type="application/octet-stream"
+                       sparkle:edSignature="fO9x4Hihe5j1Bz9pIIp7OzNaI4i5quvOTocxSUzsfKdRL5IEHt/mBgwZq/p6ck1FvVIJ73+OTDGEJHErobSyCg==" />
+        </item>
 
         <item>
             <title>Version 0.4.0</title>
