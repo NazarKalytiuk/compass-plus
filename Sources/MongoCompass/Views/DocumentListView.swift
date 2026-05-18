@@ -59,6 +59,27 @@ struct DocumentListView: View {
     @State private var rowSyncTask: Task<Void, Never>?
     @State private var jsonSyncTask: Task<Void, Never>?
 
+    /// When true, filter/sort/projection render as multi-line TextEditors
+    /// stacked vertically — better for complex queries.
+    @State private var isFilterBarExpanded: Bool = false
+
+    /// Controls the "Save current query" sheet.
+    @State private var showSaveQuerySheet: Bool = false
+    @State private var saveQueryName: String = ""
+
+    /// Tracks which filter field currently owns the keyboard. Drives the
+    /// autocomplete dropdown — non-nil = dropdown is visible (if there are
+    /// suggestions to show for that field). Backed by `@State` (not
+    /// `@FocusState`) because focus is owned by the NSTextField wrapper.
+    @State private var focusedFilterField: FilterFieldKind?
+    @State private var suggestionSelectedIndex: Int = 0
+
+    /// UTF-16 cursor positions per field, kept in sync with the NSTextField
+    /// caret. Drives context-aware autocomplete suggestions.
+    @State private var filterCursor: Int = 0
+    @State private var sortCursor: Int = 0
+    @State private var projectionCursor: Int = 0
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -268,75 +289,652 @@ struct DocumentListView: View {
         }
     }
 
-    // MARK: - Filter bar (recessed well with three mono fields)
+    // MARK: - Filter bar (recessed well with smart layout)
+    //
+    // Two-row compact mode: row 1 = filter + sort, row 2 = project + limit/skip
+    // + actions. Each field has an inline JSON validation dot that turns green
+    // for valid BSON, red for parse errors. The [⤢] toggle flips the whole
+    // block into a vertical multi-line editor for long queries.
 
     private var filterBar: some View {
-        @Bindable var viewModel = viewModel
-        return HStack(spacing: 6) {
-            filterField(label: "filter",
-                        placeholder: "{ tier: 'pro' }",
-                        text: $viewModel.activeTab.filter,
-                        flex: 2.4)
-            filterField(label: "sort",
-                        placeholder: "{ createdAt: -1 }",
-                        text: $viewModel.activeTab.sort,
-                        flex: 1.0)
-            filterField(label: "project",
-                        placeholder: "{ email: 1 }",
-                        text: $viewModel.activeTab.projection,
-                        flex: 1.4)
-
-            Button {
-                viewModel.activeTab.filter = ""
-                viewModel.activeTab.sort = ""
-                viewModel.activeTab.projection = ""
-            } label: {
-                Text("Reset")
-                    .font(.system(size: 12.5, weight: .medium))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .foregroundStyle(Theme.textSoft)
-                    .contentShape(Rectangle())
+        VStack(spacing: 6) {
+            VStack(spacing: 6) {
+                if isFilterBarExpanded {
+                    expandedFilterBody
+                } else {
+                    compactFilterBody
+                }
             }
-            .buttonStyle(.plain)
+            .padding(8)
+            .background(Theme.surface3)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            Button {
-                Task { await viewModel.refreshDocuments() }
-            } label: {
-                Text("Find")
-            }
-            .buttonStyle(.accentCompact)
-            .disabled(viewModel.activeTab.selectedCollection == nil)
+            autocompletePanel
+
+            recentChipsRow
         }
-        .padding(6)
-        .background(Theme.surface3)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Theme.surface1)
+        .sheet(isPresented: $showSaveQuerySheet) { saveQuerySheet }
     }
 
-    private func filterField(label: String, placeholder: String, text: Binding<String>, flex: CGFloat) -> some View {
+    @ViewBuilder
+    private var compactFilterBody: some View {
+        @Bindable var viewModel = viewModel
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                filterField(kind: .filter,
+                            label: "filter",
+                            placeholder: "{ tier: 'pro' }",
+                            text: $viewModel.activeTab.filter)
+                filterField(kind: .sort,
+                            label: "sort",
+                            placeholder: "{ createdAt: -1 }",
+                            text: $viewModel.activeTab.sort)
+            }
+            HStack(spacing: 6) {
+                filterField(kind: .projection,
+                            label: "project",
+                            placeholder: "{ email: 1 }",
+                            text: $viewModel.activeTab.projection)
+
+                limitSkipField(label: "limit",
+                               value: Binding(
+                                   get: { viewModel.activeTab.limit },
+                                   set: { newLimit in
+                                       viewModel.activeTab.limit = max(1, newLimit)
+                                       viewModel.activeTab.skip = 0
+                                   }
+                               ))
+
+                limitSkipField(label: "skip",
+                               value: Binding(
+                                   get: { viewModel.activeTab.skip },
+                                   set: { newSkip in
+                                       viewModel.activeTab.skip = max(0, newSkip)
+                                   }
+                               ))
+
+                filterBarActions
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var expandedFilterBody: some View {
+        @Bindable var viewModel = viewModel
+        VStack(spacing: 8) {
+            multilineFilterField(kind: .filter,
+                                 label: "filter",
+                                 placeholder: "{ tier: 'pro' }",
+                                 text: $viewModel.activeTab.filter)
+            multilineFilterField(kind: .sort,
+                                 label: "sort",
+                                 placeholder: "{ createdAt: -1 }",
+                                 text: $viewModel.activeTab.sort)
+            multilineFilterField(kind: .projection,
+                                 label: "project",
+                                 placeholder: "{ email: 1 }",
+                                 text: $viewModel.activeTab.projection)
+
+            HStack(spacing: 6) {
+                limitSkipField(label: "limit",
+                               value: Binding(
+                                   get: { viewModel.activeTab.limit },
+                                   set: { newLimit in
+                                       viewModel.activeTab.limit = max(1, newLimit)
+                                       viewModel.activeTab.skip = 0
+                                   }
+                               ))
+                limitSkipField(label: "skip",
+                               value: Binding(
+                                   get: { viewModel.activeTab.skip },
+                                   set: { newSkip in
+                                       viewModel.activeTab.skip = max(0, newSkip)
+                                   }
+                               ))
+                Spacer()
+                filterBarActions
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var filterBarActions: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isFilterBarExpanded.toggle()
+            }
+        } label: {
+            Image(systemName: isFilterBarExpanded
+                  ? "arrow.down.right.and.arrow.up.left"
+                  : "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.textSoft)
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isFilterBarExpanded ? "Collapse" : "Expand to multi-line editor")
+
+        Button {
+            resetFilters()
+        } label: {
+            Text("Reset")
+                .font(.system(size: 12.5, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .foregroundStyle(Theme.textSoft)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("r", modifiers: .command)
+
+        Button {
+            Task { await viewModel.refreshDocuments() }
+        } label: {
+            Text("Find")
+        }
+        .buttonStyle(.accentCompact)
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(viewModel.activeTab.selectedCollection == nil)
+    }
+
+    // MARK: - Field building blocks
+
+    private func filterField(kind: FilterFieldKind, label: String, placeholder: String, text: Binding<String>) -> some View {
         HStack(spacing: 0) {
+            validationDot(for: text.wrappedValue)
+                .padding(.leading, 8)
+                .padding(.trailing, 6)
             Text(label)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(Theme.textMuted)
-                .padding(.leading, 10)
                 .padding(.trailing, 6)
             Rectangle()
                 .fill(Theme.hairline)
                 .frame(width: 1, height: 18)
-            TextField(placeholder, text: text)
+            MQLTextField(
+                text: text,
+                cursor: cursorBinding(for: kind),
+                isFocused: focusBinding(for: kind),
+                placeholder: placeholder,
+                onKey: { handleSuggestionKey($0) },
+                onSubmit: { Task { await viewModel.refreshDocuments() } }
+            )
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onChange(of: text.wrappedValue) { _, _ in
+                // New token — start the dropdown selection back at the top so
+                // arrow-key state doesn't linger past stale lists.
+                suggestionSelectedIndex = 0
+            }
+            .onChange(of: cursorBinding(for: kind).wrappedValue) { _, _ in
+                suggestionSelectedIndex = 0
+            }
+        }
+        .frame(height: 32)
+        .background(Theme.surface1)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .frame(maxWidth: .infinity)
+    }
+
+    private func multilineFilterField(kind: FilterFieldKind, label: String, placeholder: String, text: Binding<String>) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(spacing: 4) {
+                validationDot(for: text.wrappedValue)
+                    .padding(.top, 10)
+                Text(label)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
+                Spacer(minLength: 0)
+            }
+            .frame(width: 64)
+            .padding(.leading, 4)
+
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(width: 1)
+
+            MQLTextEditor(
+                text: text,
+                cursor: cursorBinding(for: kind),
+                isFocused: focusBinding(for: kind),
+                placeholder: placeholder,
+                onKey: { handleSuggestionKey($0) }
+            )
+            .frame(minHeight: 60)
+            .onChange(of: text.wrappedValue) { _, _ in
+                suggestionSelectedIndex = 0
+            }
+            .onChange(of: cursorBinding(for: kind).wrappedValue) { _, _ in
+                suggestionSelectedIndex = 0
+            }
+        }
+        .background(Theme.surface1)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func limitSkipField(label: String, value: Binding<Int>) -> some View {
+        HStack(spacing: 0) {
+            Text(label)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(Theme.textMuted)
+                .padding(.leading, 8)
+                .padding(.trailing, 6)
+            Rectangle()
+                .fill(Theme.hairline)
+                .frame(width: 1, height: 18)
+            TextField("", value: value, format: .number)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(Theme.textPrimary)
-                .padding(.horizontal, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .multilineTextAlignment(.trailing)
+                .padding(.horizontal, 6)
+                .frame(width: 50)
+                .onSubmit { Task { await viewModel.refreshDocuments() } }
         }
         .frame(height: 32)
-        .background(Color.clear)
-        .frame(minWidth: 120 * flex, idealWidth: 200 * flex, maxWidth: .infinity)
-        .layoutPriority(flex)
+        .background(Theme.surface1)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    /// Status dot reflecting BSON parse state of a filter string.
+    private func validationDot(for text: String) -> some View {
+        let state = jsonValidation(text)
+        return Circle()
+            .fill(state.color)
+            .frame(width: 7, height: 7)
+            .help(state.tooltip)
+    }
+
+    private enum FilterValidation {
+        case empty, valid, invalid(String)
+
+        var color: Color {
+            switch self {
+            case .empty: return Theme.textMuted.opacity(0.45)
+            case .valid: return Theme.success
+            case .invalid: return Theme.danger
+            }
+        }
+
+        var tooltip: String {
+            switch self {
+            case .empty: return "Empty — no filter applied"
+            case .valid: return "Valid BSON"
+            case .invalid(let msg): return "Invalid: \(msg)"
+            }
+        }
+    }
+
+    private func jsonValidation(_ text: String) -> FilterValidation {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .empty }
+        do {
+            _ = try MongoService.parseJSON(trimmed)
+            return .valid
+        } catch {
+            return .invalid(error.localizedDescription)
+        }
+    }
+
+    private func resetFilters() {
+        viewModel.activeTab.filter = ""
+        viewModel.activeTab.sort = ""
+        viewModel.activeTab.projection = ""
+        viewModel.activeTab.skip = 0
+    }
+
+    // MARK: - Recent chips + save
+
+    /// Last few distinct find filters for the current db+collection. Surfaces
+    /// quick-access pills under the filter bar so the user can replay common
+    /// queries without opening the Query Log view.
+    @ViewBuilder
+    private var recentChipsRow: some View {
+        let recents = recentFilterChips
+        if !recents.isEmpty || canSaveCurrentQuery {
+            HStack(spacing: 6) {
+                Text("Recent")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.5)
+                    .textCase(.uppercase)
+                    .foregroundStyle(Theme.textMuted)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(recents, id: \.self) { recent in
+                            Button {
+                                viewModel.activeTab.filter = recent
+                                Task { await viewModel.refreshDocuments() }
+                            } label: {
+                                Text(recent)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .frame(maxWidth: 220)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Theme.surface1)
+                                    .foregroundStyle(Theme.textSoft)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Apply: \(recent)")
+                        }
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                if canSaveCurrentQuery {
+                    Button {
+                        saveQueryName = ""
+                        showSaveQuerySheet = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "bookmark")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Save")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Theme.surface1)
+                        .foregroundStyle(Theme.textSoft)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut("s", modifiers: .command)
+                    .help("Save current filter / sort / project")
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    /// True when there is something worth saving and a target collection.
+    private var canSaveCurrentQuery: Bool {
+        guard viewModel.activeTab.selectedCollection != nil else { return false }
+        let f = viewModel.activeTab.filter.trimmingCharacters(in: .whitespacesAndNewlines)
+        let s = viewModel.activeTab.sort.trimmingCharacters(in: .whitespacesAndNewlines)
+        let p = viewModel.activeTab.projection.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(f.isEmpty && s.isEmpty && p.isEmpty)
+    }
+
+    /// Deduplicated last 5 find-filter strings for the active collection.
+    private var recentFilterChips: [String] {
+        guard let db = viewModel.activeTab.selectedDatabase,
+              let coll = viewModel.activeTab.selectedCollection else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for entry in viewModel.queryLog where entry.operationType == .find
+            && entry.database == db
+            && entry.collection == coll {
+            let q = entry.query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !q.isEmpty, q != "{}", !seen.contains(q) else { continue }
+            seen.insert(q)
+            out.append(q)
+            if out.count >= 5 { break }
+        }
+        return out
+    }
+
+    @ViewBuilder
+    private var saveQuerySheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Save query")
+                .font(.system(size: 15, weight: .semibold))
+            Text("Stores the current filter, sort, and project for this collection.")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.textSecondary)
+
+            TextField("Query name", text: $saveQueryName)
+                .textFieldStyle(.themed)
+                .onSubmit(commitSaveQuery)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { showSaveQuerySheet = false }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save", action: commitSaveQuery)
+                    .buttonStyle(.accent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(saveQueryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .background(Theme.surface1)
+    }
+
+    private func commitSaveQuery() {
+        let name = saveQueryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        viewModel.saveCurrentQuery(name: name)
+        showSaveQuerySheet = false
+    }
+
+    // MARK: - Autocomplete
+
+    /// Field paths sampled from currently loaded documents — used to populate
+    /// the autocomplete dropdown. Recomputed lazily per body pass; cheap
+    /// because it caps at the first 8 documents and bails after 120 paths.
+    private var sampledFieldPaths: [String] {
+        FilterSuggester.extractFieldPaths(from: viewModel.documents)
+    }
+
+    private func textBinding(for kind: FilterFieldKind) -> Binding<String> {
+        @Bindable var viewModel = viewModel
+        switch kind {
+        case .filter:     return $viewModel.activeTab.filter
+        case .sort:       return $viewModel.activeTab.sort
+        case .projection: return $viewModel.activeTab.projection
+        }
+    }
+
+    private func cursorBinding(for kind: FilterFieldKind) -> Binding<Int> {
+        switch kind {
+        case .filter:     return $filterCursor
+        case .sort:       return $sortCursor
+        case .projection: return $projectionCursor
+        }
+    }
+
+    /// Two-way focus binding the MQL editor wrappers use. The setter funnels
+    /// into `focusedFilterField` so only one field is "active" at a time.
+    private func focusBinding(for kind: FilterFieldKind) -> Binding<Bool> {
+        Binding(
+            get: { focusedFilterField == kind },
+            set: { newValue in
+                if newValue {
+                    focusedFilterField = kind
+                } else if focusedFilterField == kind {
+                    focusedFilterField = nil
+                }
+            }
+        )
+    }
+
+    /// Current suggestion set + the parser context — both derived from
+    /// whichever field is focused. The dropdown reads this each body pass;
+    /// `FilterSuggester.complete` is pure and cheap (single-pass lexer +
+    /// linear walk to the cursor).
+    private var activeAutocomplete: (kind: FilterFieldKind, suggestions: [FilterSuggestion], context: FilterContext)? {
+        guard let kind = focusedFilterField else { return nil }
+        let textBinding = textBinding(for: kind)
+        let cursor = cursorBinding(for: kind).wrappedValue
+        let result = FilterSuggester.complete(
+            text: textBinding.wrappedValue,
+            cursor: cursor,
+            kind: kind,
+            fieldPaths: sampledFieldPaths
+        )
+        guard !result.suggestions.isEmpty else { return nil }
+        return (kind, result.suggestions, result.context)
+    }
+
+    @ViewBuilder
+    private var autocompletePanel: some View {
+        if let active = activeAutocomplete {
+            let clampedIndex = min(max(suggestionSelectedIndex, 0), active.suggestions.count - 1)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Theme.primary)
+                    Text(headerLabel(for: active.kind))
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.5)
+                        .textCase(.uppercase)
+                        .foregroundStyle(Theme.textMuted)
+                    Spacer()
+                    Text("↑↓ navigate · ⏎ insert · esc close")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.textMuted.opacity(0.85))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Theme.surface3.opacity(0.6))
+
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(active.suggestions.enumerated()), id: \.element.id) { idx, item in
+                                suggestionRow(item, isSelected: idx == clampedIndex)
+                                    .id(idx)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        insertSuggestion(item, for: active.kind, context: active.context)
+                                    }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: min(CGFloat(active.suggestions.count) * 28 + 4, 200))
+                    .onChange(of: clampedIndex) { _, newValue in
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            proxy.scrollTo(newValue, anchor: .center)
+                        }
+                    }
+                }
+            }
+            .background(Theme.surface1)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .shadow(color: Theme.shadowAmbient, radius: 6, y: 2)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+    }
+
+    private func suggestionRow(_ item: FilterSuggestion, isSelected: Bool) -> some View {
+        HStack(spacing: 8) {
+            Text(item.text)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(isSelected ? Theme.primaryDeep : Theme.textPrimary)
+                .lineLimit(1)
+
+            Text(item.kind.label)
+                .font(.system(size: 9, weight: .semibold))
+                .tracking(0.4)
+                .textCase(.uppercase)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(badgeBackground(for: item.kind))
+                .foregroundStyle(badgeForeground(for: item.kind))
+                .clipShape(Capsule())
+
+            Spacer(minLength: 8)
+
+            Text(item.detail)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textMuted)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(isSelected ? Theme.primaryTint : Color.clear)
+    }
+
+    private func badgeBackground(for kind: FilterSuggestionKind) -> Color {
+        switch kind {
+        case .fieldName:           return Theme.infoTint
+        case .logicalOperator:     return Theme.violetTint
+        case .comparisonOperator:  return Theme.successTint
+        case .arrayOperator:       return Theme.successTint
+        case .evaluationOperator:  return Theme.warningTint
+        case .geoOperator:         return Theme.infoTint
+        case .bsonType:            return Theme.violetTint
+        case .literalValue:        return Theme.warningTint
+        }
+    }
+
+    private func badgeForeground(for kind: FilterSuggestionKind) -> Color {
+        switch kind {
+        case .fieldName:           return Theme.infoDeep
+        case .logicalOperator:     return Theme.violetDeep
+        case .comparisonOperator:  return Theme.successDeep
+        case .arrayOperator:       return Theme.successDeep
+        case .evaluationOperator:  return Theme.warningDeep
+        case .geoOperator:         return Theme.infoDeep
+        case .bsonType:            return Theme.violetDeep
+        case .literalValue:        return Theme.warningDeep
+        }
+    }
+
+    private func headerLabel(for kind: FilterFieldKind) -> String {
+        switch kind {
+        case .filter:     return "Filter suggestions"
+        case .sort:       return "Sort suggestions"
+        case .projection: return "Projection suggestions"
+        }
+    }
+
+    /// Keyboard handling for the suggestion dropdown. Returns `true` only
+    /// when the keystroke actually drove the dropdown — the AppKit wrapper
+    /// then suppresses native behaviour. For plain `Enter` with no dropdown
+    /// active, returns `false` so `onSubmit` → Find still fires.
+    private func handleSuggestionKey(_ key: MQLKey) -> Bool {
+        guard let active = activeAutocomplete else {
+            // Even without suggestions, Esc should release focus.
+            if case .escape = key {
+                focusedFilterField = nil
+                return true
+            }
+            return false
+        }
+        switch key {
+        case .down:
+            let n = active.suggestions.count
+            suggestionSelectedIndex = (min(suggestionSelectedIndex, n - 1) + 1) % n
+            return true
+        case .up:
+            let n = active.suggestions.count
+            suggestionSelectedIndex = (min(suggestionSelectedIndex, n - 1) - 1 + n) % n
+            return true
+        case .returnKey, .tab:
+            let idx = min(max(suggestionSelectedIndex, 0), active.suggestions.count - 1)
+            insertSuggestion(active.suggestions[idx], for: active.kind, context: active.context)
+            return true
+        case .escape:
+            focusedFilterField = nil
+            return true
+        }
+    }
+
+    private func insertSuggestion(_ suggestion: FilterSuggestion, for kind: FilterFieldKind, context: FilterContext) {
+        let textBinding = textBinding(for: kind)
+        let cursorBinding = cursorBinding(for: kind)
+        let result = FilterSuggester.apply(suggestion, to: textBinding.wrappedValue, context: context)
+        textBinding.wrappedValue = result.text
+        cursorBinding.wrappedValue = result.cursor
+        suggestionSelectedIndex = 0
+        // Click in the dropdown can briefly steal first-responder — re-assert
+        // focus on the same kind so the dropdown stays open and the caret
+        // ends up where `FilterSuggester.apply` placed it.
+        focusedFilterField = kind
     }
 
     // MARK: - Docs area
