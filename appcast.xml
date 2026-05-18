@@ -1,0 +1,33 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
+     xmlns:dc="http://purl.org/dc/elements/1.1/"
+     version="2.0">
+    <channel>
+        <title>Compass+</title>
+        <link>https://nazarkalytiuk.github.io/compass-plus/appcast.xml</link>
+        <description>Compass+ — native macOS MongoDB GUI updates feed.</description>
+        <language>en</language>
+
+        <item>
+            <title>Version 0.4.0</title>
+            <link>https://github.com/NazarKalytiuk/compass-plus/releases/tag/v0.4.0</link>
+            <sparkle:version>0.4.0</sparkle:version>
+            <sparkle:shortVersionString>0.4.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <pubDate>Mon, 18 May 2026 15:23:00 +0000</pubDate>
+            <description><![CDATA[
+                <h3>Smart filter bar + context-aware autocomplete</h3>
+                <ul>
+                    <li>Two-row filter bar with inline BSON validation dots, limit / skip inline, recent-filter chips per collection.</li>
+                    <li>"Save query" sheet and keyboard shortcuts (⌘↩ Find, ⌘R Reset, ⌘S Save).</li>
+                    <li>Multi-line expand mode for complex filters.</li>
+                    <li>Powerful autocomplete: full MQL lexer + state-machine context analyzer. Suggests field names, comparison / logical / array / evaluation / geo operators, BSON types. Works inside quoted strings, nested objects, and <code>$or</code> sub-filters.</li>
+                </ul>
+            ]]></description>
+            <enclosure url="https://github.com/NazarKalytiuk/compass-plus/releases/download/v0.4.0/MongoCompass.zip"
+                       length="8316263"
+                       type="application/octet-stream"
+                       sparkle:edSignature="nU2lj1urFRP5HqcOOVWZfglOzKSQy7BOL9zfxew8qc9hwnBjhLQYoemh8qypciQrIRNVwcsMuaHIbUDzoUjaAA==" />
+        </item>
+    </channel>
+</rss>
